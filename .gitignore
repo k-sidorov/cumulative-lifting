@@ -1,5 +1,11 @@
 # MiniZinc-specific artifacts
 *.fzn
+*.mzn
+
+# Intermediate reports
+*.csv
+*.txt
+*.sol
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
