@@ -3,6 +3,7 @@
 import argparse
 from pathlib import Path
 import time
+import shlex
 import subprocess
 import sys
 
@@ -75,7 +76,7 @@ def solve_rcpsp_dzn(filename, flavor):
 
 def invoke_minizinc(fzn, time_limit, solver):
     if time_limit is not None and time_limit < 0:
-        logger.warn("Timeout")
+        logger.warning("Timeout")
         sys.exit(1)
     mzn_args = ["minizinc", "-a", "-s"]
     if time_limit is not None:
@@ -83,7 +84,7 @@ def invoke_minizinc(fzn, time_limit, solver):
     mzn_args += ["--input-from-stdin", "--input-is-flatzinc"]
     mzn_args += ["--solver", solver]
     if args.solver_flags is not None:
-        mzn_args += args.solver_flags.split(' ')
+        mzn_args += shlex.split(args.solver_flags)
     p = subprocess.Popen(mzn_args, stdin=subprocess.PIPE, text=True)
     p.communicate(input=fzn)
 

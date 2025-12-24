@@ -56,32 +56,66 @@ def extract_cumulative_matrix(constraints):
     return intervals, A, b
 
 
-def collect_cover_sets(durations, A, b, cover_card, pool_size):
-    assert cover_card >= 2
+def collect_row_cover_sets(durations, A, b, cover_card, pool_size):
     covers = list()
+    # For each value in A, precompute the indices where this value is encountered,
+    # together with the longest segment in it
+    inv_A = dict()
+    inv_A_longest = dict()
+    for ix, a in enumerate(A):
+        if a not in inv_A:
+            inv_A[a] = {ix}
+            inv_A_longest[a] = ix
+        else:
+            inv_A[a].add(ix)
+            if durations[ix] > inv_A_longest[a]:
+                inv_A_longest[a] = ix
     # Add all binary covers
-    for x in range(A.shape[1]):
-        for y in range(x + 1, A.shape[1]):
-            if np.any(A[:, x] + A[:, y] > b):
-                covers.append({x, y})
+    for x, a in enumerate(A):
+        lowest_val = b - a + 1
+        for k, ys in inv_A.items():
+            if k < lowest_val:
+                continue
+            for y in ys:
+                if y > x:
+                    covers.append(frozenset({x, y}))
     binary_covers = len(covers)
     logger.info(f"Added {binary_covers} binary covers")
     # For any pair of tasks, find another tasks to form a ternary cover,
     # and choose the longest one
     if cover_card >= 3:
-        for x in range(A.shape[1]):
-            for y in range(x + 1, A.shape[1]):
-                rem = b - A[:, x] - A[:, y]
-                if np.any(rem < 0):
+        for x, ax in enumerate(A):
+            for y, ay in enumerate(A[x + 1:], x + 1):
+                rem = b - (ax + ay) + 1
+                if rem <= 0:
                     continue
-                zs = [z for z in range(y + 1, A.shape[1]) if np.any(A[:, z] > rem)]
-                zs.sort(key=lambda z: -durations[z])
-                if len(zs) > 0:
-                    covers.append({x, y, zs[0]})
+                for k, z in inv_A_longest.items():
+                    if k < rem or z == x or z == y:
+                        continue
+                    covers.append(frozenset({x, y, z}))
         ternary_covers = len(covers) - binary_covers
         logger.info(f"Added {ternary_covers} ternary covers")
     # Choose the required number of covers, discarding the ones with
     # the worst elastic lower bound values
+    covers.sort(key=lambda cover: -sum(durations[i] for i in cover) / (len(cover) - 1))
+    covers = covers[:pool_size]
+    return covers
+
+
+def collect_cover_sets(durations, A, b, cover_card, pool_size):
+    assert cover_card >= 2
+    covers = set()
+    for row_ix in range(len(A)):
+        row_covers = collect_row_cover_sets(
+            durations, A[row_ix, :], b[row_ix], cover_card, pool_size
+        )
+        logger.info(
+            f"Received {len(row_covers)} covers for row #{row_ix+1}"
+        )
+        covers.update(row_covers)
+    # Choose the required number of covers, discarding the ones with
+    # the worst elastic lower bound values
+    covers = list(covers)
     covers.sort(key=lambda cover: -sum(durations[i] for i in cover) / (len(cover) - 1))
     covers = covers[:pool_size]
     return covers
@@ -102,14 +136,18 @@ def lifting_subproblem(A, b, lhs, next_ix, used_indices):
         constraints=LinearConstraint(A[:, used_indices], -np.inf, b - A[:, next_ix]),
         bounds=Bounds(0, 1),
         integrality=np.ones(len(used_indices), dtype=int), # 1 = integer variable
+        options={'presolve': False}
     )
 
     if not res.success:
-        logger.error(f"Failed to solve the lifting subproblem for index {next_ix}, used indices {used_indices}, and LHS {lhs}\n")
+        logger.error(f"Failed to solve the lifting subproblem for index {next_ix}, used indices {used_indices}, and LHS {lhs[used_indices]}\n")
+        logger.trace(f"LHS matrix: {A[:, used_indices]}")
+        logger.trace(f"RHS vector: {b - A[:, next_ix]}")
         logger.error(f"HiGHS error message: {res.message}")
         raise RuntimeError(res.message)
+    opt = np.round(res.x)
 
-    return int(np.round(lhs[used_indices] @ res.x))
+    return int(lhs[used_indices] @ opt), opt
 
 
 def lift_cover(durations, A, b, cover):
@@ -124,8 +162,22 @@ def lift_cover(durations, A, b, cover):
             (i for i in range(A.shape[1]) if not i in used_indices),
             key=lambda i: durations[i]
         )
-        lhs[next_ix] = rhs - lifting_subproblem(A, b, lhs, next_ix, list(used_indices))
+        max_lhs, opt = lifting_subproblem(A, b, lhs, next_ix, list(used_indices))
+        if max_lhs > rhs:
+            logger.trace(f"LHS matrix {A[:, list(used_indices)]}")
+            logger.trace(f"RHS vector {b - A[:, next_ix]}")
+            logger.trace(f"Objective weights {lhs[list(used_indices)]}")
+            logger.trace(f"Reported optimal objective: {max_lhs}")
+            logger.trace(f"Known upper bound: {rhs}")
+            logger.trace(f"Reported optimizer: {opt}")
+        lhs[next_ix] = rhs - max_lhs
         used_indices.add(next_ix)
+    if np.any(lhs < 0):
+        logger.warning(f"The inequality from the cover {cover} has "
+                       f"{sum(lhs < 0)} negative coefficients")
+        logger.trace(lhs)
+    logger.debug(f"Lifted the cover set {cover} to an inequality with {np.count_nonzero(lhs)} nonzeros " +
+                 f"and elastic lower bound of {sum(w * d for w, d in zip(lhs, durations)) / rhs}")
     return (lhs, rhs)
 
 
@@ -134,12 +186,26 @@ def process_cumulative_constraints(durations, A, b, cover_card, pool_size):
     logger.info(f"Received {len(cover_sets)} cover sets")
     visited_covers = list()
     cons = list()
+    n_dom = 0
+    n_skip = 0
     for cover in cover_sets:
+        # assert np.any(np.sum(A[:, list(cover)], axis=1) > b), (A[:, list(cover)], b)
         if is_visited_cover(cover, visited_covers):
+            n_skip += 1
             continue
         lhs, rhs = lift_cover(durations, A, b, cover)
         visited_covers.append((frozenset({i for i in range(A.shape[1]) if lhs[i] == 1}), len(cover)))
-        cons.append((lhs, rhs))
+        is_dominated = False
+        for ix in range(len(b)):
+            if np.all(lhs <= A[ix, :]) and b[ix] <= rhs:
+                n_dom += 1
+                logger.debug(f"Lifted inequality from {cover} is dominated by row #{ix + 1}")
+                is_dominated = True
+                break
+        if not is_dominated:
+            cons.append((lhs, rhs))
+    logger.info(f"Skipped {n_skip} cover sets by lifted constraints")
+    logger.info(f"Skipped {n_dom} cover sets by dominance")
     return cons
 
 
