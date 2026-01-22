@@ -15,6 +15,7 @@ from loguru import logger
 
 from parse_dzn import parse_dzn
 from lifting import run_lifting
+from milp import configure_milp_solver
 
 def solve_rcpsp_dzn(filename, flavor):
     if flavor not in {'std', 'max'}:
@@ -94,10 +95,12 @@ def main(args):
     logger.info(f"Starting with command-line arguments {args}")
     base_model = solve_rcpsp_dzn(args.filename, args.flavor)
     logger.info("Generated the model for the input instance")
+    solve_milp = configure_milp_solver(args.lifting_solver)
     model = run_lifting(base_model,
                         max_cons=args.max_cons,
                         cover_card=args.max_upper_bound + 1,
-                        pool_size=args.cover_pool_size)
+                        pool_size=args.cover_pool_size,
+                        milp=solve_milp)
     solver = SolverLookup.get(name=f'minizinc:{args.solver}', model=model)
     logger.info("Finished preprocessing, FlatZinc output pending")
     elapsed_time = time.perf_counter_ns() - start_time
@@ -118,6 +121,9 @@ if __name__ == "__main__":
     parser.add_argument('filename', type=Path, help='MiniZinc data file with the instance')
     parser.add_argument('--solver', type=str, default='cp-sat', help="MiniZinc target solver ID")
     parser.add_argument('--solver-flags', type=str, help="MiniZinc solver flags")
+    parser.add_argument('--lifting-solver', type=str,
+                        default='scip', choices=['scip', 'highs', 'gurobi'],
+                        help="Integer programming solver for lifting subproblems")
     parser.add_argument('-t', '--time-limit', type=int,
                         help="Stop after the given time in milliseconds")
     parser.add_argument('-n', '--max-cons', type=int, default=5,

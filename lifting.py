@@ -3,7 +3,6 @@ from loguru import logger
 from cpmpy.expressions.globalconstraints import Cumulative
 
 import numpy as np
-from scipy.optimize import milp, LinearConstraint, Bounds, linprog
 
 def extract_cumulative_matrix(constraints):
     """
@@ -164,29 +163,21 @@ def is_visited_cover(cover, visited_covers):
     return False
 
 
-def lifting_subproblem(A, b, lhs, next_ix, used_indices):
+def lifting_subproblem(A, b, lhs, next_ix, used_indices, milp):
     # Maximize lhs.T * x w.r.t. A[:, used_indices] <= b - A[:, next_ix] and x binary
-    res = milp(
-        # SciPy minimizes, so negate objective
-        c=-lhs[used_indices],
-        constraints=LinearConstraint(A[:, used_indices], -np.inf, b - A[:, next_ix]),
-        bounds=Bounds(0, 1),
-        integrality=np.ones(len(used_indices), dtype=int), # 1 = integer variable
-        options={'presolve': False}
-    )
-
-    if not res.success:
+    A_sub = A[:, used_indices]
+    b_sub = b - A[:, next_ix]
+    c_sub = lhs[used_indices]
+    # Return the subproblem objective unless the solver has failed
+    try:
+        opt = milp(A_sub, b_sub, c_sub)
+        return int(lhs[used_indices] @ opt), opt
+    except RuntimeError as e:
         logger.error(f"Failed to solve the lifting subproblem for index {next_ix}, used indices {used_indices}, and LHS {lhs[used_indices]}\n")
-        logger.trace(f"LHS matrix: {A[:, used_indices]}")
-        logger.trace(f"RHS vector: {b - A[:, next_ix]}")
-        logger.error(f"HiGHS error message: {res.message}")
-        raise RuntimeError(res.message)
-    opt = np.round(res.x)
-
-    return int(lhs[used_indices] @ opt), opt
+        raise e
 
 
-def lift_cover(durations, A, b, cover):
+def lift_cover(durations, A, b, cover, milp):
     lhs = np.zeros((A.shape[1],), dtype=int)
     rhs = len(cover) - 1
     used_indices = set()
@@ -198,7 +189,7 @@ def lift_cover(durations, A, b, cover):
             (i for i in range(A.shape[1]) if not i in used_indices),
             key=lambda i: durations[i]
         )
-        max_lhs, opt = lifting_subproblem(A, b, lhs, next_ix, list(used_indices))
+        max_lhs, opt = lifting_subproblem(A, b, lhs, next_ix, list(used_indices), milp)
         if max_lhs > rhs:
             logger.trace(f"LHS matrix {A[:, list(used_indices)]}")
             logger.trace(f"RHS vector {b - A[:, next_ix]}")
@@ -221,7 +212,7 @@ def lift_cover(durations, A, b, cover):
     return (lhs, rhs)
 
 
-def process_cumulative_constraints(durations, A, b, cover_card, pool_size):
+def process_cumulative_constraints(durations, A, b, cover_card, pool_size, milp):
     cover_sets = collect_cover_sets(durations, A, b, cover_card, pool_size)
     logger.info(f"Received {len(cover_sets)} cover sets")
     visited_covers = list()
@@ -233,7 +224,7 @@ def process_cumulative_constraints(durations, A, b, cover_card, pool_size):
         if is_visited_cover(cover, visited_covers):
             n_skip += 1
             continue
-        lhs, rhs = lift_cover(durations, A, b, cover)
+        lhs, rhs = lift_cover(durations, A, b, cover, milp)
         visited_covers.append((frozenset({i for i in range(A.shape[1]) if lhs[i] == 1}), len(cover)))
         is_dominated = False
         for ix in range(len(b)):
@@ -249,12 +240,12 @@ def process_cumulative_constraints(durations, A, b, cover_card, pool_size):
     return cons
 
 
-def run_lifting(model, max_cons, cover_card, pool_size):
+def run_lifting(model, max_cons, cover_card, pool_size, milp):
     if max_cons == 0:
         return model.copy()
     intervals, A, b = extract_cumulative_matrix(model.constraints)
     durations = [d for _, _, d in intervals]
-    cons = process_cumulative_constraints(durations, A, b, cover_card, pool_size)
+    cons = process_cumulative_constraints(durations, A, b, cover_card, pool_size, milp)
     logger.info(f'Received {len(cons)} candidate cumulative constraints')
     for ub in range(1, cover_card):
         n_cons = sum(1 if rhs == ub else 0 for _, rhs in cons)
