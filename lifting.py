@@ -3,7 +3,7 @@ from loguru import logger
 from cpmpy.expressions.globalconstraints import Cumulative
 
 import numpy as np
-from scipy.optimize import milp, LinearConstraint, Bounds
+from scipy.optimize import milp, LinearConstraint, Bounds, linprog
 
 def extract_cumulative_matrix(constraints):
     """
@@ -56,6 +56,33 @@ def extract_cumulative_matrix(constraints):
     return intervals, A, b
 
 
+def collect_large_row_cover_sets(durations, A, b, cover_card, pool_size):
+    covers = list()
+    # Group tasks into their resource consumptions
+    groups = dict()
+    for ix, a in enumerate(A):
+        if a == 0:
+            continue
+        if a not in groups:
+            groups[a] = list()
+        groups[a].append(ix)
+    # Collect the longest-duration and the shortest-duration covers from each bucket
+    for usage, group in groups.items():
+        cover_size = int(np.ceil((b + 1) / usage))
+        if cover_size <= 2 or cover_size > cover_card or cover_size > len(group):
+            continue
+        tasks = list(group)
+        tasks.sort(key=lambda x: -durations[x])
+        cover_long = set(tasks[:cover_size])
+        assert sum(A[x] for x in cover_long) > b
+        covers.append(cover_long)
+        cover_short = set(tasks[-cover_size:])
+        if cover_short != cover_long:
+            assert sum(A[x] for x in cover_short) > b
+            covers.append(cover_short)
+    return covers
+
+
 def collect_row_cover_sets(durations, A, b, cover_card, pool_size):
     covers = list()
     # For each value in A, precompute the indices where this value is encountered,
@@ -99,6 +126,14 @@ def collect_row_cover_sets(durations, A, b, cover_card, pool_size):
     # the worst elastic lower bound values
     covers.sort(key=lambda cover: -sum(durations[i] for i in cover) / (len(cover) - 1))
     covers = covers[:pool_size]
+    # Switch to the full cover set generation
+    if cover_card >= 4:
+        long_covers = collect_large_row_cover_sets(durations, A, b, cover_card, pool_size)
+        covers += [frozenset(x) for x in long_covers]
+        logger.info(f"Added {len(long_covers)} large covers")
+        for long_cover in long_covers:
+            long_cover_lb = sum(durations[i] for i in long_cover) / (len(long_cover) - 1)
+            logger.debug(f"Long cover {long_cover} with lower bound {long_cover_lb:.3f}")
     return covers
 
 
@@ -112,12 +147,13 @@ def collect_cover_sets(durations, A, b, cover_card, pool_size):
         logger.info(
             f"Received {len(row_covers)} covers for row #{row_ix+1}"
         )
+        # TODO check minimality
         covers.update(row_covers)
     # Choose the required number of covers, discarding the ones with
     # the worst elastic lower bound values
     covers = list(covers)
     covers.sort(key=lambda cover: -sum(durations[i] for i in cover) / (len(cover) - 1))
-    covers = covers[:pool_size]
+    covers = [c for c in covers if len(c) > 3] + covers[:pool_size]
     return covers
 
 
@@ -176,8 +212,12 @@ def lift_cover(durations, A, b, cover):
         logger.warning(f"The inequality from the cover {cover} has "
                        f"{sum(lhs < 0)} negative coefficients")
         logger.trace(lhs)
-    logger.debug(f"Lifted the cover set {cover} to an inequality with {np.count_nonzero(lhs)} nonzeros " +
-                 f"and elastic lower bound of {sum(w * d for w, d in zip(lhs, durations)) / rhs}")
+    if len(cover) <= 3:
+        logger.debug(f"Lifted the cover set {cover} to an inequality with {np.count_nonzero(lhs)} nonzeros " +
+                     f"and elastic lower bound of {sum(w * d for w, d in zip(lhs, durations)) / rhs}")
+    else:
+        logger.info(f"Lifted the cover set {cover} to an inequality with {np.count_nonzero(lhs)} nonzeros " +
+                     f"and elastic lower bound of {sum(w * d for w, d in zip(lhs, durations)) / rhs}")
     return (lhs, rhs)
 
 
