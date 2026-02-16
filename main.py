@@ -122,13 +122,13 @@ if __name__ == "__main__":
     parser.add_argument('--solver', type=str, default='cp-sat', help="MiniZinc target solver ID")
     parser.add_argument('--solver-flags', type=str, help="MiniZinc solver flags")
     parser.add_argument('--lifting-solver', type=str,
-                        default='scip', choices=['scip', 'highs', 'gurobi'],
+                        default='highs', choices=['scip', 'highs', 'gurobi'],
                         help="Integer programming solver for lifting subproblems")
     parser.add_argument('-t', '--time-limit', type=int,
                         help="Stop after the given time in milliseconds")
     parser.add_argument('-n', '--max-cons', type=int, default=5,
                         help="Maximum number of added cumulative constraints")
-    parser.add_argument('-b', '--max-upper-bound', type=int, default=2,
+    parser.add_argument('-b', '--max-upper-bound', type=int, default=1,
                         help="Maximum capacity of the added constraints")
     parser.add_argument('-p', '--cover-pool-size', type=int, default=1000,
                         help="Number of cover sets to be considered")
