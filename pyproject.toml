@@ -3,7 +3,7 @@ name = "cumulative-lifting"
 version = "0.1.0"
 description = "Cumulative lifting preprocessing for RCPSPs"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11,<3.12"
 dependencies = [
     "cpmpy>=0.9.28",
     "loguru>=0.7.3",
@@ -14,6 +14,6 @@ dependencies = [
 
 [project.optional-dependencies]
 milp-solvers = [
-    "gurobipy>=13.0.1",
+    "gurobipy==12.0.0",
     "pyscipopt>=6.0.0",
 ]

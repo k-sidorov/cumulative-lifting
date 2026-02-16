@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 from copy import deepcopy
 import csv
+import json
 import os
 import subprocess
 
@@ -26,9 +27,9 @@ def parse_gourd_report(path):
                     .replace("[", "")
                     .replace("]", "")
                     .split(', '))
-            assert csv_row['program'].endswith('-lb') or csv_row['program'].endswith('-ub'), csv_row
+            assert csv_row['program'].endswith('-lb') or csv_row['program'].endswith('-ub') or csv_row['program'] == 'unl', csv_row
             solver = csv_row['program'].replace('-lb', '').replace('-ub', '')
-            search_direction = 'dual' if csv_row['program'].endswith('-lb') else 'primal'
+            search_direction = 'dual' if csv_row['program'].endswith('-lb') or solver == 'unl' else 'primal'
             lift = any(p == '-n' and int(n) > 0 for p, n in zip(args[:-1], args[1:]))
             problem = 'rcpsp-max' if 'max' in args else ('rcpsp' if 'std' in args else None)
             *_, path = args
@@ -59,7 +60,8 @@ def parse_gourd_report(path):
                     'instance': instance,
                     'status': (
                         'timeout' if "timed out" in csv_row['slurm'] else
-                        'memout' if "out of memory" in csv_row['slurm'] else None
+                        'memout' if "out of memory" in csv_row['slurm'] else
+                        'failed' if "failed" in csv_row['slurm'] else None
                     ),
                     'exit_code': int(csv_row['exit']) if csv_row['exit'] != 'N/A' else None,
                 }
@@ -67,9 +69,114 @@ def parse_gourd_report(path):
             rows[csv_row['run id']] = row
     return rows
 
+
+def parse_mzn(base_row, stdout):
+    mzn_segments = list()
+    rows = list()
+    status = base_row['status']
+    if status == 'unknown':
+        # Status unknown, do not write any solver-specific statistics
+        rows = [base_row]
+    elif status == 'unsat':
+        # UNSAT, report the stats (time, conflicts, propagations) at UNSAT verdict
+        unsat_row = deepcopy(base_row)
+        reading = False
+        for line in stdout.split('/n'):
+            if "UNSAT" in line:
+                reading = True
+                continue
+            if reading and "%%%mzn-stat: " in line:
+                k, v = line.split(": ")[1].split("=")
+                if k == 'solveTime':
+                    unsat_row['time'] = float(v) + unsat_row['preprocessing_time']
+                elif k == 'failures':
+                    unsat_row['conflicts'] = int(v)
+                elif k == 'propagations':
+                    unsat_row['propagations'] = int(v)
+        rows = [unsat_row]
+    else:
+        # SAT, report the stats (time, conflicts, propagations) at every bound change
+        if "use_node_packing: true" in stdout:
+            stdout = stdout.replace("%%%mzn-stat-end", "")
+        blocks = [
+            block
+            for raw_block in stdout.split("----------")
+            for block in raw_block.split("%%%mzn-stat-end")
+        ]
+        for block in blocks:
+            row = deepcopy(base_row)
+            for line in block.split('\n'):
+                if "%%%mzn-stat: " in line:
+                    k, v = line.split(": ")[1].split("=")
+                    if k == 'solveTime':
+                        row['time'] = float(v) + row['preprocessing_time']
+                    elif k == 'engineStatisticsTimeSpentInSolver':
+                        row['time'] = 1e-3 * int(v)
+                    elif k in {'failures', 'engineStatisticsNumConflicts'}:
+                        row['conflicts'] = int(v)
+                    elif k in {'propagations', 'engineStatisticsNumPropagations'}:
+                        row['propagations'] = int(v)
+                    elif k == 'objective':
+                        row['objective'] = int(v)
+                    elif k == 'objectiveBound':
+                        row['bound'] = int(v)
+                elif "Attempting to find solution with assumption" in line:
+                    row['bound'] = int(line.split('<=')[1].replace(']', '').strip())
+            if "objective" in row or "bound" in row:
+                last_obj = None if len(rows) == 0 else rows[-1].get('objective')
+                last_bound = None if len(rows) == 0 else rows[-1].get('bound')
+                if last_obj != row.get('objective') or last_bound != row.get('bound'):
+                    if last_bound is not None and 'bound' not in row:
+                        row['bound'] = last_bound
+                    rows.append(row)
+    return rows
+
+
+def parse_cpsat_verbose(base_row, stdout):
+    if "=====UNSATISFIABLE=====" in stdout:
+        _, unsat_block = stdout.split("=====UNSATISFIABLE=====")
+        assert base_row['instance_status'] == 'unsat', base_row
+        row = deepcopy(base_row)
+        for line in stdout.split('/n'):
+            if "%%%mzn-stat: " in line:
+                k, v = line.split(": ")[1].split("=")
+                if k == 'solveTime':
+                    row['time'] = float(v) + row['preprocessing_time']
+                elif k == 'failures':
+                    row['conflicts'] = int(v)
+                elif k == 'propagations':
+                    row['propagations'] = int(v)
+        return [row]
+    rows = list()
+    for line in stdout.split('\n'):
+        row = None
+        if "%% #Bound" in line:
+            row = deepcopy(base_row)
+            for token in line.split():
+                if "next:" in token:
+                    lb, _ = token.replace("next:", "").strip()[1:-1].split(",")
+                    lb = int(lb)
+                    row["bound"] = lb
+                elif token.endswith("s"):
+                    row["time"] = float(token[:-1]) + row['preprocessing_time']
+        elif "%% #" in line and "best:" in line:
+            assert "%% #1" in line, (line, base_row)
+            row = deepcopy(base_row)
+            for token in line.split():
+                if "best:" in token:
+                    opt = int(token.replace("best:", ""))
+                    row["objective"] = opt
+                    row["bound"] = opt
+                elif token.endswith("s"):
+                    row["time"] = float(token[:-1]) + row['preprocessing_time']
+        if row is not None:
+            rows.append(row)
+    return rows
+
+
 def main(args):
     in_rows = parse_gourd_report(args.input_file)
-    with open(args.output_file, "w") as csvfile:
+    with args.output_file.open("w") as csvfile, args.bounds_output_file.open("w") as boundfile:
         writer = csv.DictWriter(
             csvfile,
             fieldnames=[
@@ -83,19 +190,35 @@ def main(args):
                 'exit_code',
                 'full_time',
                 'peak_memory',
-                'preprocessing_time',
-                'n_added_cumulative',
-                'n_added_disjunctive',
-                'elastic_lower_bound',
                 'instance_status',
                 'objective',
                 'bound',
                 'time',
+                'preprocessing_time',
                 'conflicts',
                 'propagations'
-            ]
+            ],
+            extrasaction='ignore',
         )
         writer.writeheader()
+        bound_writer = csv.DictWriter(
+            boundfile,
+            fieldnames=[
+                'solver',
+                'search_direction',
+                'problem',
+                'collection',
+                'instance',
+                'preprocessing_time',
+                'n_added_cumulative',
+                'n_added_disjunctive',
+                'elastic_lower_bound',
+                'best_lhs',
+                'best_rhs',
+            ],
+            extrasaction='ignore',
+        )
+        bound_writer.writeheader()
         runs = [
             run_dir
             for solver_dir in args.logdir.iterdir()
@@ -109,8 +232,12 @@ def main(args):
             base_row['n_added_cumulative'] = 0
             base_row['n_added_disjunctive'] = 0
             base_row['elastic_lower_bound'] = 0.0
+            base_row['best_lhs'] = None
+            base_row['best_rhs'] = None
             # Read preprocessing time from stderr
             with (run_dir / "stderr").open() as f:
+                current_lhs = None
+                current_rhs = None
                 for line in f:
                     if 'Preprocessing phase completed in' in line:
                         base_row['preprocessing_time'] = 1e-3 * int(line.split()[-2])
@@ -118,11 +245,23 @@ def main(args):
                         base_row['n_added_cumulative'] += 1
                         if line.split('≤')[1].strip() == '1':
                             base_row['n_added_disjunctive'] += 1
+                        current_lhs, current_rhs = line.split('≤')
+                        current_rhs = int(current_rhs)
+                        *_, current_lhs = current_lhs.split(' | ')
+                        _, current_lhs = current_lhs.split(' - ')
+                        current_lhs = [
+                            [
+                                int(term.replace('[', '').replace(']', ''))
+                                for term in token.split('*')
+                            ]
+                            for token in current_lhs.split(' + ')
+                        ]
                     elif 'Elastic lower bound' in line:
-                        base_row['elastic_lower_bound'] = max(
-                            base_row['elastic_lower_bound'],
-                            float(line.split(': ')[-1].strip())
-                        )
+                        lb = float(line.split(': ')[-1].strip())
+                        if lb > base_row['elastic_lower_bound']:
+                            base_row['elastic_lower_bound'] = lb
+                            base_row['best_lhs'] = current_lhs
+                            base_row['best_rhs'] = json.dumps(current_rhs)
             # Write all objective claims in stdout
             rows = list()
             # --- Determine if the problem is UNSAT and write the last row accordingly
@@ -135,59 +274,29 @@ def main(args):
                     elif "=UNKNOWN" in line:
                         status = 'unknown'
                         break
-            base_row['instance_status'] = status
-            mzn_segments = list()
             if status == 'unknown':
-                # Status unknown, do not write any solver-specific statistics
-                rows = [deepcopy(base_row)]
-            elif status == 'unsat':
-                # UNSAT, report the stats (time, conflicts, propagations) at UNSAT verdict
-                unsat_row = deepcopy(base_row)
-                reading = False
-                with (run_dir / "stdout").open() as f:
-                    for line in f:
-                        if "UNSAT" in line:
-                            reading = True
-                            continue
-                        if reading and "%%%mzn-stat: " in line:
-                            k, v = line.split(": ")[1].split("=")
-                            if k == 'solveTime':
-                                unsat_row['time'] = float(v) + unsat_row['preprocessing_time']
-                            elif k == 'failures':
-                                unsat_row['conflicts'] = int(v)
-                            elif k == 'propagations':
-                                unsat_row['propagations'] = int(v)
-                rows = [unsat_row]
+                # CP-SAT dual search reports UNKNOWN when it fails to discover a solution;
+                # process the output 
+                if base_row['solver'] == 'cp-sat' and base_row['search_direction'] == 'dual':
+                    status = 'sat'
+            base_row['instance_status'] = status
+
+            if base_row['solver'] == 'cp-sat' and base_row['search_direction'] == 'dual':
+                rows = parse_cpsat_verbose(
+                    deepcopy(base_row),
+                    (run_dir / "stdout").read_text()
+                )
             else:
-                # SAT, report the stats (time, conflicts, propagations) at every bound change
-                blocks = [
-                    block
-                    for raw_block in (run_dir / "stdout").read_text().split("----------")
-                    for block in raw_block.split("%%%mzn-stat-end")
-                ]
-                for block in blocks:
-                    row = deepcopy(base_row)
-                    for line in block.split('\n'):
-                        if "%%%mzn-stat: " in line:
-                            k, v = line.split(": ")[1].split("=")
-                            if k == 'solveTime':
-                                row['time'] = float(v) + row['preprocessing_time']
-                            elif k == 'failures':
-                                row['conflicts'] = int(v)
-                            elif k == 'propagations':
-                                row['propagations'] = int(v)
-                            elif k == 'objective':
-                                row['objective'] = int(v)
-                            elif k == 'objectiveBound':
-                                row['bound'] = int(v)
-                    if "objective" in row or "bound" in row:
-                        last_obj = None if len(rows) == 0 else rows[-1].get('objective')
-                        last_bound = None if len(rows) == 0 else rows[-1].get('bound')
-                        if last_obj != row.get('objective') or last_bound != row.get('bound'):
-                            rows.append(row)
+                rows = parse_mzn(
+                    deepcopy(base_row),
+                    (run_dir / "stdout").read_text()
+                )
+
             print(f'Parsed {index} out of {len(runs)}', end='\r')
             for row in rows:
                 writer.writerow(row)
+            if base_row['lift']:
+                bound_writer.writerow(base_row)
 
 
 if __name__ == "__main__":
@@ -210,6 +319,13 @@ if __name__ == "__main__":
         type=Path,
         required=True,
         help="CSV file with the report table",
+    )
+    parser.add_argument(
+        "--bounds-output-file",
+        "-b",
+        type=Path,
+        required=True,
+        help="CSV file with the best lifted cuts",
     )
     args = parser.parse_args()
     main(args)
