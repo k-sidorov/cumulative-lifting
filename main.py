@@ -1,5 +1,3 @@
-#!/usr/bin/env -S uv run --script --frozen --offline --project /home/ksidorov/cumulative-lifting
-
 import argparse
 from pathlib import Path
 import time
