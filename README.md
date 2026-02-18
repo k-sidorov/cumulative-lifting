@@ -1,6 +1,6 @@
 # Cumulative lifting preprocessor
 
-This repository implements the lifting-based preprocessing described in the “On inferring cumulative constraints” paper. It automatically discovers and injects valid global `cumulative` constraints into RCPSP models to strengthen lower bounds and improve solver performance.
+This repository implements the lifting-based preprocessing described in the “[On inferring cumulative constraints](https://arxiv.org/abs/2602.15635)” paper. It automatically discovers and injects valid global `cumulative` constraints into RCPSP models to strengthen lower bounds and improve solver performance.
 
 ## Prerequisites
 
