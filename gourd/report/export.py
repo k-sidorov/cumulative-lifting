@@ -210,6 +210,8 @@ def main(args):
                 'collection',
                 'instance',
                 'preprocessing_time',
+                'n_candidate_constraints',
+                'n_lifting_subproblems',
                 'n_added_cumulative',
                 'n_added_disjunctive',
                 'elastic_lower_bound',
@@ -241,6 +243,10 @@ def main(args):
                 for line in f:
                     if 'Preprocessing phase completed in' in line:
                         base_row['preprocessing_time'] = 1e-3 * int(line.split()[-2])
+                    elif "lifting subproblems" in line:
+                        base_row['n_lifting_subproblems'] = int(line.split()[-3])
+                    elif "candidate cumulative constraints" in line:
+                        base_row['n_candidate_constraints'] = int(line.split()[-4])
                     elif '≤' in line:
                         base_row['n_added_cumulative'] += 1
                         if line.split('≤')[1].strip() == '1':

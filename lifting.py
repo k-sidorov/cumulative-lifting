@@ -181,6 +181,7 @@ def lift_cover(durations, A, b, cover, milp):
     lhs = np.zeros((A.shape[1],), dtype=int)
     rhs = len(cover) - 1
     used_indices = set()
+    n_calls = 0
     for ix in cover:
         lhs[ix] = 1
         used_indices.add(ix)
@@ -190,6 +191,7 @@ def lift_cover(durations, A, b, cover, milp):
             key=lambda i: durations[i]
         )
         max_lhs, opt = lifting_subproblem(A, b, lhs, next_ix, list(used_indices), milp)
+        n_calls += 1
         if max_lhs > rhs:
             logger.trace(f"LHS matrix {A[:, list(used_indices)]}")
             logger.trace(f"RHS vector {b - A[:, next_ix]}")
@@ -209,7 +211,7 @@ def lift_cover(durations, A, b, cover, milp):
     else:
         logger.info(f"Lifted the cover set {cover} to an inequality with {np.count_nonzero(lhs)} nonzeros " +
                      f"and elastic lower bound of {sum(w * d for w, d in zip(lhs, durations)) / rhs}")
-    return (lhs, rhs)
+    return ((lhs, rhs), n_calls)
 
 
 def process_cumulative_constraints(durations, A, b, cover_card, pool_size, milp):
@@ -219,12 +221,14 @@ def process_cumulative_constraints(durations, A, b, cover_card, pool_size, milp)
     cons = list()
     n_dom = 0
     n_skip = 0
+    n_calls = 0
     for cover in cover_sets:
         # assert np.any(np.sum(A[:, list(cover)], axis=1) > b), (A[:, list(cover)], b)
         if is_visited_cover(cover, visited_covers):
             n_skip += 1
             continue
-        lhs, rhs = lift_cover(durations, A, b, cover, milp)
+        (lhs, rhs), n_calls_cover = lift_cover(durations, A, b, cover, milp)
+        n_calls += n_calls_cover
         visited_covers.append((frozenset({i for i in range(A.shape[1]) if lhs[i] == 1}), len(cover)))
         is_dominated = False
         for ix in range(len(b)):
@@ -237,6 +241,7 @@ def process_cumulative_constraints(durations, A, b, cover_card, pool_size, milp)
             cons.append((lhs, rhs))
     logger.info(f"Skipped {n_skip} cover sets by lifted constraints")
     logger.info(f"Skipped {n_dom} cover sets by dominance")
+    logger.info(f"Solved {n_calls} lifting subproblems")
     return cons
 
 
