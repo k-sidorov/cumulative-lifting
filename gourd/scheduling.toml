@@ -7,21 +7,10 @@ arguments = [
     "--lifting-solver", "gurobi",
     "-n", "param|n",
     "-p", "100",
+    "-l", "20000",
     "-b", "1000",
     "max",
-    "path|/home/ksidorov/disjoint-data/nontrivial/rcpsp-max/**/*.dzn"
-    # "path|/home/ksidorov/disjoint-data/nontrivial/rcpsp-max/sm_j30_converted/PSP64.dzn"
-]
-
-[input.rcpsp]
-arguments = [
-    "--lifting-solver", "gurobi",
-    "-n", "param|n",
-    "-p", "100",
-    "-b", "1000",
-    "std",
-    "path|/home/ksidorov/disjoint-data/nontrivial/rcpsp/**/*.dzn"
-    # "path|/home/ksidorov/disjoint-data/nontrivial/rcpsp/data_pack_d/pack003.dzn"
+    "path|/home/ksidorov/disjoint-data/nontrivial/rcpsp-max-large/**/*.dzn"
 ]
 
 [program.pumpkin-lb]
