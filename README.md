@@ -27,6 +27,7 @@ The entry point is `main.py`. It takes a problem flavor (`std` for RCPSP or `max
 * `-n`: Maximum number of inferred constraints to add (default: 5).
 * `-b`: Maximum capacity of the added constraints.
 * `-p`: Size of the pool of short covers to be considered for lifting.
+* `-l`: Maximum number of lifting subproblems to be solved.
 * `--lifting-solver`: The IP solver used for the subproblems (`highs`, `scip`, or `gurobi`).
 * `--solver`: The MiniZinc ID of the target CP solver (`cp-sat`, `pumpkin`, `chuffed`, etc.).
 
