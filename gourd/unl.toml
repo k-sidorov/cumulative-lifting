@@ -11,7 +11,7 @@ arguments = [
 [program.pumpkin-lb]
 binary = "/home/ksidorov/cumulative-lifting/main.py"
 arguments = [
-    "-n", "5", "-p", "100", "-l", "20000", "-b", "1",
+    "-n", "5", "-p", "100", "-b", "1",
     "--solver", "pumpkin",
     "--solver-flags", "-f --optimisation-strategy linear-unsat-sat",
     "-t", "3600000"
