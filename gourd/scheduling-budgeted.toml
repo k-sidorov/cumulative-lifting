@@ -1,0 +1,67 @@
+output_path = "/scratch/ksidorov/gourd-experiments/lifting/scheduling/output"
+metrics_path = "/scratch/ksidorov/gourd-experiments/lifting/scheduling/metrics"
+experiments_folder = "/scratch/ksidorov/gourd-experiments/lifting/scheduling/experiments"
+
+[input.rcpsp-max]
+arguments = [
+    "--lifting-solver", "gurobi",
+    "-n", "param|n",
+    "-p", "100",
+    "-l", "20000",
+    "-b", "1000",
+    "max",
+    "path|/home/ksidorov/disjoint-data/nontrivial/rcpsp-max-large/**/*.dzn"
+]
+
+[program.pumpkin-lb]
+binary = "/home/ksidorov/cumulative-lifting/main.py"
+arguments = [
+    "--solver", "pumpkin",
+    "--solver-flags", "-f --optimisation-strategy linear-unsat-sat",
+    "-t", "3600000"
+    # "-t", "60000"
+]
+
+[program.pumpkin-ub]
+binary = "/home/ksidorov/cumulative-lifting/main.py"
+arguments = [
+    "--solver", "pumpkin",
+    "--solver-flags", "\"-f\"",
+    "-t", "3600000"
+    # "-t", "60000"
+]
+
+[program.cp-sat-lb]
+binary = "/home/ksidorov/cumulative-lifting/main.py"
+arguments = [
+    "--solver", "cp-sat",
+    "--solver-flags",
+    "-v --params \"optimize_with_core:true use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
+    "-t", "3600000"
+    # "-t", "60000"
+]
+
+[program.cp-sat-ub]
+binary = "/home/ksidorov/cumulative-lifting/main.py"
+arguments = [
+    "--solver", "cp-sat",
+    "--solver-flags",
+    "-f --params \"use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
+    "-t", "3600000"
+    # "-t", "60000"
+]
+
+[parameter.n]
+values = ["0", "5"]
+
+[slurm]
+experiment_name = "schedule"
+output_folder = "./slurmout/"
+partition = "compute-p2"
+account = "research-eemcs-st"
+
+[resource_limits]
+time_limit = "1h 5m"
+cpus = 1
+mem_per_cpu = 4000
+

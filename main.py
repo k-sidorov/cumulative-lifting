@@ -100,6 +100,7 @@ def main(args):
                         max_cons=args.max_cons,
                         cover_card=args.max_upper_bound + 1,
                         pool_size=args.cover_pool_size,
+                        max_lifting_calls=args.max_lifting_calls,
                         milp=solve_milp)
     solver = SolverLookup.get(name=f'minizinc:{args.solver}', model=model)
     logger.info("Finished preprocessing, FlatZinc output pending")
@@ -130,7 +131,9 @@ if __name__ == "__main__":
                         help="Maximum number of added cumulative constraints")
     parser.add_argument('-b', '--max-upper-bound', type=int, default=1,
                         help="Maximum capacity of the added constraints")
-    parser.add_argument('-p', '--cover-pool-size', type=int, default=1000,
+    parser.add_argument('-p', '--cover-pool-size', type=int, default=None,
                         help="Number of cover sets to be considered")
+    parser.add_argument('-l', '--max-lifting-calls', type=int, default=None,
+                        help="Maximum number of lifting subproblems to be solved")
     args = parser.parse_args()
     main(args)

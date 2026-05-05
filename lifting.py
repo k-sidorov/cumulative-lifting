@@ -1,3 +1,5 @@
+import heapq
+
 from loguru import logger
 
 from cpmpy.expressions.globalconstraints import Cumulative
@@ -124,7 +126,8 @@ def collect_row_cover_sets(durations, A, b, cover_card, pool_size):
     # Choose the required number of covers, discarding the ones with
     # the worst elastic lower bound values
     covers.sort(key=lambda cover: -sum(durations[i] for i in cover) / (len(cover) - 1))
-    covers = covers[:pool_size]
+    if pool_size is not None:
+        covers = covers[:pool_size]
     # Switch to the full cover set generation
     if cover_card >= 4:
         long_covers = collect_large_row_cover_sets(durations, A, b, cover_card, pool_size)
@@ -177,7 +180,7 @@ def lifting_subproblem(A, b, lhs, next_ix, used_indices, milp):
         raise e
 
 
-def lift_cover(durations, A, b, cover, milp):
+def lift_cover(durations, A, b, cover, milp, worst_pool_bound: float = float('-inf'), remaining_calls=None):
     lhs = np.zeros((A.shape[1],), dtype=int)
     rhs = len(cover) - 1
     used_indices = set()
@@ -185,11 +188,25 @@ def lift_cover(durations, A, b, cover, milp):
     for ix in cover:
         lhs[ix] = 1
         used_indices.add(ix)
-    while len(used_indices) < A.shape[1]:
-        next_ix = max(
-            (i for i in range(A.shape[1]) if not i in used_indices),
-            key=lambda i: durations[i]
-        )
+    remaining = sorted(
+        (i for i in range(A.shape[1]) if i not in used_indices),
+        key=lambda i: durations[i],
+        reverse=True,
+    )
+    current_energy = np.dot(lhs, durations) / rhs
+    remaining_energy = sum(durations[i] for i in remaining) / rhs
+    for step, next_ix in enumerate(remaining):
+        if remaining_calls is not None and n_calls >= remaining_calls:
+            logger.info("Exhausted the MILP budget")
+            break
+        upper_bound_elb = current_energy + remaining_energy
+        if upper_bound_elb <= worst_pool_bound:
+            logger.debug(
+                f"Early stop for cover {cover}: upper bound ELB {upper_bound_elb:.4f} "
+                f"<= worst pool bound {worst_pool_bound:.4f}, "
+                f"skipping {len(remaining) - step} MIP calls"
+            )
+            break
         max_lhs, opt = lifting_subproblem(A, b, lhs, next_ix, list(used_indices), milp)
         n_calls += 1
         if max_lhs > rhs:
@@ -201,6 +218,8 @@ def lift_cover(durations, A, b, cover, milp):
             logger.trace(f"Reported optimizer: {opt}")
         lhs[next_ix] = rhs - max_lhs
         used_indices.add(next_ix)
+        current_energy += lhs[next_ix] * durations[next_ix] / rhs
+        remaining_energy -= durations[next_ix] / rhs
     if np.any(lhs < 0):
         logger.warning(f"The inequality from the cover {cover} has "
                        f"{sum(lhs < 0)} negative coefficients")
@@ -214,21 +233,29 @@ def lift_cover(durations, A, b, cover, milp):
     return ((lhs, rhs), n_calls)
 
 
-def process_cumulative_constraints(durations, A, b, cover_card, pool_size, milp):
+def process_cumulative_constraints(durations, A, b, cover_card, pool_size, max_lifting_calls, milp, max_cons: int):
     cover_sets = collect_cover_sets(durations, A, b, cover_card, pool_size)
     logger.info(f"Received {len(cover_sets)} cover sets")
     visited_covers = list()
-    cons = list()
+    pool = []  # min-heap of (elb, uid, lhs, rhs); tracks best max_cons constraints
     n_dom = 0
     n_skip = 0
     n_calls = 0
+    remaining_calls = None if max_lifting_calls is None else max_lifting_calls
     for cover in cover_sets:
         # assert np.any(np.sum(A[:, list(cover)], axis=1) > b), (A[:, list(cover)], b)
         if is_visited_cover(cover, visited_covers):
             n_skip += 1
             continue
-        (lhs, rhs), n_calls_cover = lift_cover(durations, A, b, cover, milp)
+        worst_pool_bound = pool[0][0] if len(pool) >= max_cons else float('-inf')
+        (lhs, rhs), n_calls_cover = lift_cover(durations, A, b, cover, milp,
+                                               worst_pool_bound=worst_pool_bound,
+                                               remaining_calls=remaining_calls)
         n_calls += n_calls_cover
+        if remaining_calls is not None:
+            remaining_calls -= n_calls_cover
+            if remaining_calls <= 0:
+                break
         visited_covers.append((frozenset({i for i in range(A.shape[1]) if lhs[i] == 1}), len(cover)))
         is_dominated = False
         for ix in range(len(b)):
@@ -238,26 +265,29 @@ def process_cumulative_constraints(durations, A, b, cover_card, pool_size, milp)
                 is_dominated = True
                 break
         if not is_dominated:
-            cons.append((lhs, rhs))
+            elb = sum(w * d for w, d in zip(lhs, durations)) / rhs
+            entry = (elb, id(lhs), lhs, rhs)
+            if len(pool) < max_cons:
+                heapq.heappush(pool, entry)
+            elif elb > pool[0][0]:
+                heapq.heapreplace(pool, entry)
     logger.info(f"Skipped {n_skip} cover sets by lifted constraints")
     logger.info(f"Skipped {n_dom} cover sets by dominance")
     logger.info(f"Solved {n_calls} lifting subproblems")
-    return cons
+    return [(lhs, rhs) for _, _, lhs, rhs in sorted(pool, key=lambda x: -x[0])]
 
 
-def run_lifting(model, max_cons, cover_card, pool_size, milp):
+def run_lifting(model, max_cons, cover_card, pool_size, max_lifting_calls, milp):
     if max_cons == 0:
         return model.copy()
     intervals, A, b = extract_cumulative_matrix(model.constraints)
     durations = [d for _, _, d in intervals]
-    cons = process_cumulative_constraints(durations, A, b, cover_card, pool_size, milp)
+    cons = process_cumulative_constraints(durations, A, b, cover_card, pool_size, max_lifting_calls, milp, max_cons)
     logger.info(f'Received {len(cons)} candidate cumulative constraints')
     for ub in range(1, cover_card):
         n_cons = sum(1 if rhs == ub else 0 for _, rhs in cons)
         if n_cons > 0:
             logger.info(f'* {n_cons} with RHS = {ub}')
-    cons.sort(key=lambda x: -sum(w * d for w, d in zip(x[0], durations)) / x[1])
-    cons = cons[:max_cons]
     full_model = model.copy()
     for lhs, rhs in cons:
         lhs_str = " + ".join(f"{w}*[{ix}]" for ix, w in enumerate(lhs) if w != 0)
