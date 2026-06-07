@@ -16,6 +16,7 @@ from loguru import logger
 from parse_dzn import parse_dzn
 from lifting import run_lifting
 from milp import configure_milp_solver
+from op_edges import add_op_edges
 
 def solve_rcpsp_dzn(filename, flavor):
     if flavor not in {'std', 'max'}:
@@ -72,7 +73,7 @@ def solve_rcpsp_dzn(filename, flavor):
     makespan = max(start + durations)
     model.minimize(makespan)
 
-    return model
+    return model, start, data
 
 
 def invoke_minizinc(fzn, time_limit, solver):
@@ -93,7 +94,7 @@ def invoke_minizinc(fzn, time_limit, solver):
 def main(args):
     start_time = time.perf_counter_ns()
     logger.info(f"Starting with command-line arguments {args}")
-    base_model = solve_rcpsp_dzn(args.filename, args.flavor)
+    base_model, start, data = solve_rcpsp_dzn(args.filename, args.flavor)
     logger.info("Generated the model for the input instance")
     solve_milp = configure_milp_solver(args.lifting_solver)
     model = run_lifting(base_model,
@@ -102,6 +103,19 @@ def main(args):
                         pool_size=args.cover_pool_size,
                         max_lifting_calls=args.max_lifting_calls,
                         milp=solve_milp)
+    if args.op_edges:
+        if args.flavor != 'std':
+            logger.error("OP-disjoint edges are only implemented for the 'std' flavor")
+            raise ValueError("OP-disjoint edges require flavor 'std'")
+        model, op_stats = add_op_edges(model, start, data,
+                                       method=args.op_method,
+                                       instance_path=args.filename,
+                                       budget_s=args.op_budget,
+                                       spreadfail_solver=args.op_spreadfail_solver,
+                                       cache_path=args.op_cache,
+                                       use_neighbors=args.op_neighbors,
+                                       per_pair_limit=args.op_per_pair_limit)
+        logger.info(f"OP-edge preprocessing stats: {op_stats}")
     solver = SolverLookup.get(name=f'minizinc:{args.solver}', model=model)
     logger.info("Finished preprocessing, FlatZinc output pending")
     elapsed_time = time.perf_counter_ns() - start_time
@@ -135,5 +149,25 @@ if __name__ == "__main__":
                         help="Number of cover sets to be considered")
     parser.add_argument('-l', '--max-lifting-calls', type=int, default=None,
                         help="Maximum number of lifting subproblems to be solved")
+    parser.add_argument('--op-edges', action='store_true',
+                        help="Add disjunctive cliques from the conflict graph")
+    parser.add_argument('--op-method',
+                        choices=['none', 'oracle', 'spreadfail', 'spreadfree'],
+                        default='none',
+                        help="OP-edge detector: none (hard edges only); oracle "
+                             "(ground-truth closure, needs T*); spreadfail "
+                             "(reference-schedule closure, needs T*); spreadfree "
+                             "(optimum-free all-schedules closure, native CPMpy)")
+    parser.add_argument('--op-budget', type=int, default=300,
+                        help="Wall-clock budget (s) for OP-edge detection")
+    parser.add_argument('--op-spreadfail-solver', type=str, default='ortools',
+                        help="CPMpy solver for the native SPREAD-FAIL per-pair checks "
+                             "(ortools = in-process, fast; minizinc:pumpkin = subprocess)")
+    parser.add_argument('--op-neighbors', action='store_true',
+                        help="SPREAD-FAIL: also free resource-neighbours of the pair")
+    parser.add_argument('--op-per-pair-limit', type=int, default=10,
+                        help="Per-pair time limit (s) for SPREAD-FAIL checks")
+    parser.add_argument('--op-cache', type=str, default=None,
+                        help="JSON path to cache/load detected OP edges")
     args = parser.parse_args()
     main(args)
