@@ -1,0 +1,46 @@
+# Step 1 — build the OP-edge sequence (ordered) per instance and report the metric.
+#
+# Each job runs detection only: it writes <instance>.opseq.json (the ordered,
+# jointly-OP sequence, via --op-cache auto) and logs one line
+#   OP-SEQUENCE | n=.. hard=.. candidates=.. seqlen=.. used=.. ratio=..
+# No CP solve happens.  Run this wave first; the largest `seqlen` across the logs
+# is the upper end of the [parameter.k] grid you then set in scheduling-prefix.toml.
+#
+# NOTE: --op-cache auto writes the cache next to each .dzn (so the prefix wave can
+# reuse it).  That directory must be writable; point the instances at a writable
+# tree, or replace `auto` with an explicit per-run path if needed.
+
+output_path = "/scratch/ksidorov/gourd-experiments/lifting/scheduling-prefix/detect/output"
+metrics_path = "/scratch/ksidorov/gourd-experiments/lifting/scheduling-prefix/detect/metrics"
+experiments_folder = "/scratch/ksidorov/gourd-experiments/lifting/scheduling-prefix/detect/experiments"
+
+[input.rcpsp]
+arguments = [
+    "-n", "0",
+    "--op-edges",
+    "--op-method", "spreadfail",
+    "--op-cache", "auto",
+    "--op-detect-only",
+    "--op-budget", "600",
+    "std",
+    "path|/home/ksidorov/disjoint-data/nontrivial/rcpsp/**/*.dzn"
+]
+
+[program.opseq-detect]
+binary = "/home/ksidorov/cumulative-lifting/main.py"
+# -t large so the detection budget is never starved (it is total budget; here
+# there is no solve, but the guard in main.py still subtracts preprocessing time).
+arguments = [
+    "-t", "700000"
+]
+
+[slurm]
+experiment_name = "opseq-detect"
+output_folder = "./slurmout/"
+partition = "compute-p2"
+account = "research-eemcs-st"
+
+[resource_limits]
+time_limit = "1h 5m"
+cpus = 1
+mem_per_cpu = 4000

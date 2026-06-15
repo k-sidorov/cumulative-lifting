@@ -1,0 +1,75 @@
+# Step 2 — prefix ablation over the OP-edge sequence.
+#
+# For each instance and each k in [parameter.k], the target solver is prefaced
+# with a clique cover over (hard resource-disjoint edges) + (first k edges of the
+# cached OP sequence), then solved to optimality.  k=0 is the hard-edges-only
+# baseline.  --op-prefix loads <instance>.opseq.json (built by
+# scheduling-opseq-detect.toml) and slices it; k > seqlen is clamped to the full
+# sequence (a harmless duplicate of the all-edges run, dedup in the report).
+# Detection is therefore paid once (Step 1), and every per-k job is cheap.
+#
+# Set [parameter.k] below to 0 .. (max seqlen seen in the Step-1 logs).
+
+output_path = "/scratch/ksidorov/gourd-experiments/lifting/scheduling-prefix/sweep/output"
+metrics_path = "/scratch/ksidorov/gourd-experiments/lifting/scheduling-prefix/sweep/metrics"
+experiments_folder = "/scratch/ksidorov/gourd-experiments/lifting/scheduling-prefix/sweep/experiments"
+
+[input.rcpsp]
+arguments = [
+    "-n", "0",
+    "--op-edges",
+    "--op-method", "spreadfail",
+    "--op-cache", "auto",
+    "--op-prefix", "param|k",
+    "std",
+    "path|/home/ksidorov/disjoint-data/nontrivial/rcpsp/**/*.dzn"
+]
+
+[program.pumpkin-lb]
+binary = "/home/ksidorov/cumulative-lifting/main.py"
+arguments = [
+    "--solver", "pumpkin",
+    "--solver-flags", "-f --optimisation-strategy linear-unsat-sat",
+    "-t", "3600000"
+]
+
+[program.pumpkin-ub]
+binary = "/home/ksidorov/cumulative-lifting/main.py"
+arguments = [
+    "--solver", "pumpkin",
+    "--solver-flags", "\"-f\"",
+    "-t", "3600000"
+]
+
+[program.cp-sat-lb]
+binary = "/home/ksidorov/cumulative-lifting/main.py"
+arguments = [
+    "--solver", "cp-sat",
+    "--solver-flags",
+    "-v --params \"optimize_with_core:true use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
+    "-t", "3600000"
+]
+
+[program.cp-sat-ub]
+binary = "/home/ksidorov/cumulative-lifting/main.py"
+arguments = [
+    "--solver", "cp-sat",
+    "--solver-flags",
+    "-f --params \"use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
+    "-t", "3600000"
+]
+
+# Placeholder grid: widen to 0 .. max(seqlen) after the Step-1 detect wave.
+[parameter.k]
+values = ["0", "1", "2", "3", "4", "5"]
+
+[slurm]
+experiment_name = "schedule-prefix"
+output_folder = "./slurmout/"
+partition = "compute-p2"
+account = "research-eemcs-st"
+
+[resource_limits]
+time_limit = "1h 5m"
+cpus = 1
+mem_per_cpu = 4000

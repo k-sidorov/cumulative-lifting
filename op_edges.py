@@ -446,7 +446,8 @@ def clique_cover(n, edges):
 # --------------------------------------------------------------------------- #
 def add_op_edges(model, start, data, method="none", instance_path=None,
                  budget_s=300, spreadfail_solver="ortools", cache_path=None,
-                 use_neighbors=False, per_pair_limit=10):
+                 use_neighbors=False, per_pair_limit=10, prefix=None,
+                 detect_only=False):
     """Augment `model` (a CPMpy Model with task start vars `start`) with
     disjunctive cliques from the conflict graph.  `method` selects the OP-edge
     detector: 'none' (hard edges only), 'oracle' (sound ground-truth closure,
@@ -455,6 +456,10 @@ def add_op_edges(model, start, data, method="none", instance_path=None,
     set).  If `cache_path` is given, OP edges are cached as JSON."""
     import json
     import os
+    if prefix is not None and method != "none" \
+            and not (cache_path and os.path.exists(cache_path)):
+        raise ValueError("--op-prefix requires a pre-built --op-cache "
+                         "(run with --op-detect-only first)")
     n, p, cap, rr, succ0, pred0 = _instance_view(data)
     head, tail = _heads_tails(n, p, succ0, pred0)
     reach = _reachable(n, succ0)
@@ -522,6 +527,23 @@ def add_op_edges(model, start, data, method="none", instance_path=None,
                     json.dump([list(e) for e in op_edges], fh)
                 logger.info(f"Saved OP edges to cache {cache_path}")
 
+    full_seqlen = len(op_edges)
+    if detect_only:
+        return model, {
+            "hard": len(hard), "candidates": len(cands),
+            "cheap_accept": n_acc, "cheap_reject": n_rej,
+            "op_edges": full_seqlen, "seqlen": full_seqlen,
+            "cliques": 0, "L": L, "U": U,
+        }
+    if prefix is not None:
+        k = max(0, min(prefix, full_seqlen))
+        if k != prefix:
+            logger.info(f"--op-prefix {prefix} clamped to {k} "
+                        f"(OP sequence length {full_seqlen})")
+        op_edges = op_edges[:k]
+        logger.info(f"OP-sequence prefix: using {len(op_edges)} of "
+                    f"{full_seqlen} edges")
+
     all_edges = set(hard) | set(op_edges)
     cliques = clique_cover(n, all_edges)
     big = [c for c in cliques if len(c) >= 2]
@@ -543,4 +565,5 @@ def add_op_edges(model, start, data, method="none", instance_path=None,
         "hard": len(hard), "candidates": len(cands),
         "cheap_accept": n_acc, "cheap_reject": n_rej,
         "op_edges": len(op_edges), "cliques": len(big), "L": L, "U": U,
+        "seqlen": full_seqlen,
     }

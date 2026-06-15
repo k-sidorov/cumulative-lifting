@@ -107,15 +107,32 @@ def main(args):
         if args.flavor != 'std':
             logger.error("OP-disjoint edges are only implemented for the 'std' flavor")
             raise ValueError("OP-disjoint edges require flavor 'std'")
+        cache_path = args.op_cache
+        if cache_path == "auto":
+            cache_path = str(Path(args.filename).with_suffix(".opseq.json"))
+            logger.info(f"--op-cache auto resolved to {cache_path}")
         model, op_stats = add_op_edges(model, start, data,
                                        method=args.op_method,
                                        instance_path=args.filename,
                                        budget_s=args.op_budget,
                                        spreadfail_solver=args.op_spreadfail_solver,
-                                       cache_path=args.op_cache,
+                                       cache_path=cache_path,
                                        use_neighbors=args.op_neighbors,
-                                       per_pair_limit=args.op_per_pair_limit)
+                                       per_pair_limit=args.op_per_pair_limit,
+                                       prefix=args.op_prefix,
+                                       detect_only=args.op_detect_only)
         logger.info(f"OP-edge preprocessing stats: {op_stats}")
+        seqlen = op_stats["seqlen"]
+        cand = op_stats["candidates"]
+        ratio = (seqlen / cand) if cand else 0.0
+        logger.info(
+            f"OP-SEQUENCE | n={data['n_tasks']} hard={op_stats['hard']} "
+            f"candidates={cand} seqlen={seqlen} used={op_stats['op_edges']} "
+            f"ratio={ratio:.4f}"
+        )
+        if args.op_detect_only:
+            logger.info("Detect-only mode: sequence cached, skipping solve")
+            return
     solver = SolverLookup.get(name=f'minizinc:{args.solver}', model=model)
     logger.info("Finished preprocessing, FlatZinc output pending")
     elapsed_time = time.perf_counter_ns() - start_time
@@ -168,6 +185,14 @@ if __name__ == "__main__":
     parser.add_argument('--op-per-pair-limit', type=int, default=10,
                         help="Per-pair time limit (s) for SPREAD-FAIL checks")
     parser.add_argument('--op-cache', type=str, default=None,
-                        help="JSON path to cache/load detected OP edges")
+                        help="JSON path to cache/load detected OP edges; "
+                             "'auto' = <instance>.opseq.json next to the data file")
+    parser.add_argument('--op-prefix', type=int, default=None,
+                        help="Use only the first K edges of the (ordered) cached OP "
+                             "sequence; clamped to its length. Requires a pre-built "
+                             "--op-cache. Default: use the whole sequence.")
+    parser.add_argument('--op-detect-only', action='store_true',
+                        help="Detect the OP sequence, write the cache, print the "
+                             "OP-SEQUENCE metric line, then exit without solving.")
     args = parser.parse_args()
     main(args)
