@@ -16,21 +16,27 @@ experiments_folder = "/scratch/ksidorov/gourd-experiments/lifting/scheduling-pre
 
 [input.rcpsp]
 arguments = [
+    "path|/home/ksidorov/disjoint-data/op-tests/*.dzn"
+]
+
+[program.opseq-detect]
+# -t large so the detection budget is never starved (it is total budget; here
+# there is no solve, but the guard in main.py still subtracts preprocessing time).
+binary = "/home/ksidorov/.local/bin/runwrap.py"
+arguments = [
+    "run",
+    "--parser",
+    "/home/ksidorov/cumulative-lifting/runwrap-parsers/parse-detect.py",
+    "/home/ksidorov/cumulative-lifting/main.py",
     "-n", "0",
     "--op-edges",
     "--op-method", "spreadfail",
     "--op-cache", "auto",
     "--op-detect-only",
     "--op-budget", "600",
+    "--op-spreadfail-solver",
+    "minizinc:pumpkin",
     "std",
-    "path|/home/ksidorov/disjoint-data/nontrivial/rcpsp/**/*.dzn"
-]
-
-[program.opseq-detect]
-binary = "/home/ksidorov/cumulative-lifting/main.py"
-# -t large so the detection budget is never starved (it is total budget; here
-# there is no solve, but the guard in main.py still subtracts preprocessing time).
-arguments = [
     "-t", "700000"
 ]
 
@@ -41,6 +47,6 @@ partition = "compute-p2"
 account = "research-eemcs-st"
 
 [resource_limits]
-time_limit = "1h 5m"
+time_limit = "15m"
 cpus = 1
 mem_per_cpu = 4000

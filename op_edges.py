@@ -158,8 +158,8 @@ def _build_cpmpy(n, p, cap, rr, succ0, extra_disjoint=()):
 
 def optimal_makespan(n, p, cap, rr, succ0, extra_disjoint=(), time_limit=None):
     model, s, makespan = _build_cpmpy(n, p, cap, rr, succ0, extra_disjoint)
-    ok = model.solve(solver="ortools", time_limit=time_limit) if time_limit \
-        else model.solve(solver="ortools")
+    ok = model.solve(solver="minizinc:cp-sat", time_limit=time_limit) if time_limit \
+            else model.solve(solver="minizinc:cp-sat")
     if not ok:
         return None, None
     return int(makespan.value()), [int(v) for v in s.value()]
