@@ -16,47 +16,26 @@ experiments_folder = "/scratch/ksidorov/gourd-experiments/lifting/scheduling-pre
 
 [input.rcpsp]
 arguments = [
-    "-n", "0",
-    "--op-edges",
-    "--op-method", "spreadfail",
-    "--op-cache", "auto",
     "--op-prefix", "param|k",
     "std",
-    "path|/home/ksidorov/disjoint-data/nontrivial/rcpsp/**/*.dzn"
-]
-
-[program.pumpkin-lb]
-binary = "/home/ksidorov/cumulative-lifting/main.py"
-arguments = [
-    "--solver", "pumpkin",
-    "--solver-flags", "-f --optimisation-strategy linear-unsat-sat",
-    "-t", "3600000"
-]
-
-[program.pumpkin-ub]
-binary = "/home/ksidorov/cumulative-lifting/main.py"
-arguments = [
-    "--solver", "pumpkin",
-    "--solver-flags", "\"-f\"",
-    "-t", "3600000"
-]
-
-[program.cp-sat-lb]
-binary = "/home/ksidorov/cumulative-lifting/main.py"
-arguments = [
-    "--solver", "cp-sat",
-    "--solver-flags",
-    "-v --params \"optimize_with_core:true use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
-    "-t", "3600000"
+    "path|/home/ksidorov/disjoint-data/op-tests-nontrivial/*.dzn"
 ]
 
 [program.cp-sat-ub]
-binary = "/home/ksidorov/cumulative-lifting/main.py"
+binary = "/home/ksidorov/.local/bin/runwrap.py"
 arguments = [
+    "run",
+    "--parser",
+    "/home/ksidorov/cumulative-lifting/runwrap-parsers/parse-mzn.py",
+    "/home/ksidorov/cumulative-lifting/main.py",
     "--solver", "cp-sat",
     "--solver-flags",
     "-f --params \"use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
-    "-t", "3600000"
+    "-t", "1200000",
+    "-n", "0",
+    "--op-edges",
+    "--op-method", "spreadfail",
+    "--op-cache", "auto"
 ]
 
 # Grid sized to the longest OP sequence from the Step-1 detect wave (max seqlen = 233).
@@ -71,6 +50,6 @@ partition = "compute-p2"
 account = "research-eemcs-st"
 
 [resource_limits]
-time_limit = "1h 5m"
+time_limit = "21m"
 cpus = 1
 mem_per_cpu = 4000
