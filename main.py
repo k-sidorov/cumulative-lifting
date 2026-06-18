@@ -85,8 +85,23 @@ def invoke_minizinc(fzn, time_limit, solver):
         mzn_args += ["-t", str(time_limit)]
     mzn_args += ["--input-from-stdin", "--input-is-flatzinc"]
     mzn_args += ["--solver", solver]
-    if args.solver_flags is not None:
-        mzn_args += shlex.split(args.solver_flags)
+    flags = shlex.split(args.solver_flags) if args.solver_flags is not None else []
+    if solver == "cp-sat":
+        # Reproducibility: a single search worker (so the only randomness source
+        # is the seed, not thread interleaving) plus the requested random seed.
+        # Merge into the existing --params token if present, else add one.
+        det = ["num_workers:1"]
+        if args.solver_seed is not None:
+            det.append(f"random_seed:{args.solver_seed}")
+        if "--params" in flags:
+            i = flags.index("--params")
+            flags[i + 1] = (flags[i + 1] + " " + " ".join(det)).strip()
+        else:
+            flags += ["--params", " ".join(det)]
+    elif args.solver_seed is not None:
+        logger.warning(f"--solver-seed is only wired for cp-sat; ignored for solver '{solver}'")
+    mzn_args += flags
+    logger.info(f"Invoking MiniZinc: {shlex.join(mzn_args)}")
     p = subprocess.Popen(mzn_args, stdin=subprocess.PIPE, text=True)
     p.communicate(input=fzn)
 
@@ -153,6 +168,10 @@ if __name__ == "__main__":
     parser.add_argument('filename', type=Path, help='MiniZinc data file with the instance')
     parser.add_argument('--solver', type=str, default='cp-sat', help="MiniZinc target solver ID")
     parser.add_argument('--solver-flags', type=str, help="MiniZinc solver flags")
+    parser.add_argument('--solver-seed', type=int, default=None,
+                        help="Random seed for the target solver. For cp-sat this also "
+                             "pins the search to a single worker (num_workers:1) so the "
+                             "seed is the only source of run-to-run variation.")
     parser.add_argument('--lifting-solver', type=str,
                         default='highs', choices=['scip', 'highs', 'gurobi'],
                         help="Integer programming solver for lifting subproblems")

@@ -28,13 +28,15 @@ def process_run(run_dir: Path):
         return None
 
     argv = json.loads(argv_path.read_text())
-    *_, flag, prefix, _, path = argv
-    if flag != "--op-prefix":
+    if "--op-prefix" not in argv:
         return
-    prefix = int(prefix)
+    prefix = int(argv[argv.index("--op-prefix") + 1])
+    seed = int(argv[argv.index("--solver-seed") + 1]) if "--solver-seed" in argv else None
+    # The instance path is the trailing positional (flavor + filename).
+    path = argv[-1]
     *_, instance = path.split("/")
 
-    opt_event = {"instance": instance, "prefix": prefix}
+    opt_event = {"instance": instance, "prefix": prefix, "seed": seed}
 
     for ev in load_events(events_dir):
         if "objective" not in ev or "bound" not in ev:
@@ -51,7 +53,7 @@ def main(root: Path, out_csv: Path):
         writer = csv.DictWriter(
             f,
             fieldnames=[
-                "instance", "prefix", "time", "n_failures", "n_propagations"
+                "instance", "prefix", "seed", "time", "n_failures", "n_propagations"
             ],
             extrasaction='ignore'
         )
