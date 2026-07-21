@@ -1,0 +1,41 @@
+cff-version: 1.2.0
+title: >-
+  Source code bundle for the experiments on cumulative
+  lifting
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Konstantin
+    family-names: Sidorov
+    email: k.sidorov@tudelft.nl
+    affiliation: TU Delft
+    orcid: 'https://orcid.org/0009-0009-0655-4200'
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.20044686
+    description: Zenodo entry for the CP 2026 lifting implementation
+  - type: doi
+    value: 10.5281/zenodo.18663551
+    description: Zenodo entry for the data used to produce the results reported in the CP 2026 paper
+repository-code: 'https://github.com/k-sidorov/cumulative-lifting'
+license: MIT
+preferred-citation:
+  authors:
+    - family-names: Sidorov
+      given-names: Konstantin
+  title: On Inferring Cumulative Constraints
+  doi: 10.4230/LIPIcs.CP.2026.50
+  url: https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.CP.2026.50
+  type: conference-paper
+  start: 50:1
+  end: 50:23
+  year: '2026'
+  isbn: 978-3-95977-432-1
+  collection-title: 32nd International Conference on Principles and Practice of Constraint Programming (CP 2026)
+  conference:
+    name: International Conference on Principles and Practice of Constraint Programming (CP)
+  publisher:
+    name: Schloss Dagstuhl -- Leibniz-Zentrum für Informatik
+    address: Dagstuhl, Germany
