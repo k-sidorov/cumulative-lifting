@@ -84,7 +84,7 @@ def collect_large_row_cover_sets(durations, A, b, cover_card, pool_size):
     return covers
 
 
-def collect_row_cover_sets(durations, A, b, cover_card, pool_size):
+def collect_row_cover_sets(durations, A, b, cover_card, pool_size, use_fixed_comparison=False):
     covers = list()
     # For each value in A, precompute the indices where this value is encountered,
     # together with the longest segment in it
@@ -96,8 +96,12 @@ def collect_row_cover_sets(durations, A, b, cover_card, pool_size):
             inv_A_longest[a] = ix
         else:
             inv_A[a].add(ix)
-            if durations[ix] > inv_A_longest[a]:
-                inv_A_longest[a] = ix
+            if use_fixed_comparison:
+                if durations[ix] > durations[inv_A_longest[a]]:
+                    inv_A_longest[a] = ix
+            else:
+                if durations[ix] > inv_A_longest[a]:
+                    inv_A_longest[a] = ix
     # Add all binary covers
     for x, a in enumerate(A):
         lowest_val = b - a + 1
@@ -139,12 +143,13 @@ def collect_row_cover_sets(durations, A, b, cover_card, pool_size):
     return covers
 
 
-def collect_cover_sets(durations, A, b, cover_card, pool_size):
+def collect_cover_sets(durations, A, b, cover_card, pool_size, use_fixed_comparison=False):
     assert cover_card >= 2
     covers = set()
     for row_ix in range(len(A)):
         row_covers = collect_row_cover_sets(
-            durations, A[row_ix, :], b[row_ix], cover_card, pool_size
+            durations, A[row_ix, :], b[row_ix], cover_card, pool_size,
+            use_fixed_comparison=use_fixed_comparison
         )
         logger.info(
             f"Received {len(row_covers)} covers for row #{row_ix+1}"
@@ -233,8 +238,8 @@ def lift_cover(durations, A, b, cover, milp, worst_pool_bound: float = float('-i
     return ((lhs, rhs), n_calls)
 
 
-def process_cumulative_constraints(durations, A, b, cover_card, pool_size, max_lifting_calls, milp, max_cons: int):
-    cover_sets = collect_cover_sets(durations, A, b, cover_card, pool_size)
+def process_cumulative_constraints(durations, A, b, cover_card, pool_size, max_lifting_calls, milp, max_cons: int, use_fixed_comparison=False):
+    cover_sets = collect_cover_sets(durations, A, b, cover_card, pool_size, use_fixed_comparison=use_fixed_comparison)
     logger.info(f"Received {len(cover_sets)} cover sets")
     visited_covers = list()
     pool = []  # min-heap of (elb, uid, lhs, rhs); tracks best max_cons constraints
@@ -277,12 +282,15 @@ def process_cumulative_constraints(durations, A, b, cover_card, pool_size, max_l
     return [(lhs, rhs) for _, _, lhs, rhs in sorted(pool, key=lambda x: -x[0])]
 
 
-def run_lifting(model, max_cons, cover_card, pool_size, max_lifting_calls, milp):
+def run_lifting(model, max_cons, cover_card, pool_size, max_lifting_calls, milp, use_fixed_comparison=False):
     if max_cons == 0:
         return model.copy()
     intervals, A, b = extract_cumulative_matrix(model.constraints)
     durations = [d for _, _, d in intervals]
-    cons = process_cumulative_constraints(durations, A, b, cover_card, pool_size, max_lifting_calls, milp, max_cons)
+    cons = process_cumulative_constraints(
+        durations, A, b, cover_card, pool_size, max_lifting_calls, milp, max_cons,
+        use_fixed_comparison=use_fixed_comparison
+    )
     logger.info(f'Received {len(cons)} candidate cumulative constraints')
     for ub in range(1, cover_card):
         n_cons = sum(1 if rhs == ub else 0 for _, rhs in cons)

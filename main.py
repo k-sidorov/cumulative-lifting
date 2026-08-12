@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --script --frozen --offline --project /home/ksidorov/cumulative-lifting
+#!/usr/bin/env -S uv run --script --frozen --offline --project /home/ksidorov/cumulative-lifting-cp2026
 
 import argparse
 from pathlib import Path
@@ -101,7 +101,8 @@ def main(args):
                         cover_card=args.max_upper_bound + 1,
                         pool_size=args.cover_pool_size,
                         max_lifting_calls=args.max_lifting_calls,
-                        milp=solve_milp)
+                        milp=solve_milp,
+                        use_fixed_comparison=args.use_fixed_comparison)
     solver = SolverLookup.get(name=f'minizinc:{args.solver}', model=model)
     logger.info("Finished preprocessing, FlatZinc output pending")
     elapsed_time = time.perf_counter_ns() - start_time
@@ -135,5 +136,7 @@ if __name__ == "__main__":
                         help="Number of cover sets to be considered")
     parser.add_argument('-l', '--max-lifting-calls', type=int, default=None,
                         help="Maximum number of lifting subproblems to be solved")
+    parser.add_argument('--use-fixed-comparison', action='store_true',
+                        help="Replace the broken max-duration computation from the CP 2026 version with a corrected one")
     args = parser.parse_args()
     main(args)
