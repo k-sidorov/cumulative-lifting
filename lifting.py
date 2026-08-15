@@ -199,7 +199,7 @@ def lift_cover(durations, A, b, cover, milp, worst_pool_bound: float = float('-i
         reverse=True,
     )
     current_energy = np.dot(lhs, durations) / rhs
-    remaining_energy = sum(durations[i] for i in remaining) / rhs
+    remaining_energy = sum(durations[i] for i in remaining)
     for step, next_ix in enumerate(remaining):
         if remaining_calls is not None and n_calls >= remaining_calls:
             logger.info("Exhausted the MILP budget")
@@ -224,7 +224,7 @@ def lift_cover(durations, A, b, cover, milp, worst_pool_bound: float = float('-i
         lhs[next_ix] = rhs - max_lhs
         used_indices.add(next_ix)
         current_energy += lhs[next_ix] * durations[next_ix] / rhs
-        remaining_energy -= durations[next_ix] / rhs
+        remaining_energy -= durations[next_ix]
     if np.any(lhs < 0):
         logger.warning(f"The inequality from the cover {cover} has "
                        f"{sum(lhs < 0)} negative coefficients")
