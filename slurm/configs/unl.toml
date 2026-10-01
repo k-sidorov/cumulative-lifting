@@ -1,0 +1,72 @@
+# CP 2026 comparison of lifting against the disjointness-based UNL extension of Pumpkin, rerun for
+# the corrigendum. Ported from gourd/unl.toml (removed in v0.3.0; see commit ecc8a50).
+#
+# Arms:
+#   lift-cp26-pumpkin-lb : exactly the configuration behind the paper's results, i.e. the legacy
+#                          lifting behavior and HiGHS for the lifting subproblems -- gourd/unl.toml
+#                          omitted --lifting-solver, so main.py fell back to its default
+#   lift-pumpkin-lb      : the configuration the paper describes: the corrected lifting with Gurobi
+#                          for the lifting subproblems, as in the other experiments
+#   unl                  : Pumpkin with the disjointness extension, from a separate Pumpkin checkout
+#                          (`cargo build --release --examples`); its -t is in seconds
+#
+# See scheduling.toml for why all flags live under [program.*] and how the glob placeholder is used.
+#
+# Build, inspect and submit with:
+#   scut build slurm/configs/unl.toml -Dworkspace=... -Dproject_dir=... -Dunl_binary=.../target/release/examples/rcpsp \
+#       -Drcpsp=... -Drcpsp_max=... -Dglob='**/*.dzn' -v
+#   scut plan && scut submit
+#   scut nodes
+#   report/export.py ${workspace}/experiments/latest -o runs.csv -b bounds.csv
+
+experiment_root = "${workspace}/experiments"
+
+[input.rcpsp-max]
+arguments = ["max", "path|${rcpsp_max}/${glob}"]
+
+[input.rcpsp]
+arguments = ["std", "path|${rcpsp}/${glob}"]
+
+[program.lift-cp26-pumpkin-lb]
+command = [
+    "${project_dir}/main.py",
+    "-n", "5",
+    "-p", "100",
+    "-b", "1",
+    "--cp26-lifting-behavior",
+    "--solver", "pumpkin",
+    "--solver-flags", "-f --optimisation-strategy linear-unsat-sat",
+    "-t", "3600000",
+]
+output_envs = true
+
+[program.lift-pumpkin-lb]
+command = [
+    "${project_dir}/main.py",
+    "--lifting-solver", "gurobi",
+    "-n", "5",
+    "-p", "100",
+    "-b", "1",
+    "--solver", "pumpkin",
+    "--solver-flags", "-f --optimisation-strategy linear-unsat-sat",
+    "-t", "3600000",
+]
+output_envs = true
+
+[program.unl]
+command = [
+    "${unl_binary}",
+    "-ln",
+    "-t", "3600",
+]
+output_envs = true
+
+[slurm]
+experiment_name = "unl"
+partition = "compute-p2"
+account = "research-eemcs-st"
+
+[resource_limits]
+time_limit_minutes = 65
+cpus = 1
+mem_per_cpu = 4000

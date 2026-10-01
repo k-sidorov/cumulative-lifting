@@ -30,50 +30,60 @@ The entry point is `main.py`. It takes a problem flavor (`std` for RCPSP or `max
 * `-l`: Maximum number of lifting subproblems to be solved.
 * `--lifting-solver`: The IP solver used for the subproblems (`highs`, `scip`, or `gurobi`).
 * `--solver`: The MiniZinc ID of the target CP solver (`cp-sat`, `pumpkin`, `chuffed`, etc.).
+* `--cp26-lifting-behavior`: Recover the lifting behavior of the CP 2026 paper (see [Corrigendum](#corrigendum-to-the-cp-2026-paper)).
+
+## Corrigendum to the CP 2026 paper
+
+Version 0.3.0 corrects three issues behind the results reported in the paper:
+
+1. **Max-duration representative.** When collecting covers, the longest task among those with equal demand was chosen by comparing a duration to a task *index* instead of to that task's duration.
+2. **ELB early stop.** While lifting a cover, the remaining energy in the upper bound on the elastic lower bound was divided by the right-hand side. This underestimates the bound, so lifting could stop before the best constraint was found.
+3. **Lifting solver in the UNL comparison.** The comparison with Pumpkin's disjointness extension used HiGHS for the lifting subproblems instead of Gurobi, which was used in all other experiments.
+
+Fixes 1 and 2 are the default. `--cp26-lifting-behavior` restores both legacy behaviors, which reproduces the lifting used for the paper. The code and the [gourd](https://github.com/ConSol-Lab/gourd) configurations that produced the paper's results are at commit `ecc8a50` (v0.2.0); the data is on Zenodo ([10.5281/zenodo.18663551](https://doi.org/10.5281/zenodo.18663551)).
 
 ## Reproducing experimental results
 
-Below are the configurations used for the benchmarks in the paper. These commands use various solvers and search strategies (primal vs. dual) to evaluate the impact of the lifted constraints.
+The experiments run on Slurm with scut, which orders tasks instance by instance so that all configurations for an instance tend to run on the same node. Install it from its repository with `uv tool install`, and prepare the environment with `uv sync --all-extras` (the experiments use Gurobi for the lifting subproblems). The shebang of `main.py` points `uv` at the checkout location on the cluster; adjust it if yours differs.
 
-### CP-SAT
+There is one configuration per experiment of the paper in `slurm/configs/`:
 
-Primal search with strong propagation enabled:
+| Configuration | Experiment | Placeholders |
+|---|---|---|
+| `scheduling.toml` | Lifting on RCPSP and RCPSP/max | `rcpsp`, `rcpsp_max` |
+| `scheduling-budgeted.toml` | Lifting with at most 20000 subproblems (`-l`) on large RCPSP/max instances | `rcpsp_max_large` |
+| `unl.toml` | Comparison with Pumpkin's disjointness extension | `rcpsp`, `rcpsp_max`, `unl_binary` |
 
-```bash
-uv run main.py --solver cp-sat \
-  --solver-flags "-f --params \"use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"" \
-  -b 1000 -p 100 -n 5 \
- <flavor> <data_file>
-```
-
-To shift focus to lower-bound improvement using MaxSAT-style core optimization, run the dual search as follows:
+Every configuration runs each instance without lifting (`base-*`), with the corrected lifting (`lift-*`) and with the paper's lifting (`lift-cp26-*`), for each solver configuration; the header of each file lists the exact arms. All of them also take `workspace` (where the results go; use a different one per configuration), `project_dir` (this checkout) and `glob` (the instances, relative to each data directory):
 
 ```bash
-uv run main.py --solver cp-sat \
-  --solver-flags "-f -v --params \"optimize_with_core:true use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"" \
-  -b 1000 -p 100 -n 5 \
- <flavor> <data_file>
+scut build slurm/configs/scheduling.toml \
+  -Dworkspace=<workspace> -Dproject_dir=<checkout> \
+  -Drcpsp=<data>/rcpsp -Drcpsp_max=<data>/rcpsp-max \
+  -Dglob='**/*.dzn'
+scut plan     # prints one fully resolved command line
+scut submit   # re-run until the backlog is drained, as it respects the submission quota
 ```
 
-### Pumpkin
+To run a pilot first, build the same configuration with a narrower pattern such as `-Dglob='**/*1.dzn'`. Keep a leading wildcard, so that the runs are named the same way as in the full campaign.
 
-Primal search:
+Once the runs are done, `report/export.py` collects them into the same CSV layouts as those used for the paper, plus the columns `experiment`, `lifting_behavior` and `node`:
 
 ```bash
-uv run main.py --solver pumpkin \
-  --solver-flags "-f" \
-  -b 1000 -p 100 -n 5 \
-   <flavor> <data_file>
+uv run report/export.py <workspace>/experiments/latest \
+  -o runs.csv -b bounds.csv --sacct-file sacct.txt
 ```
 
-Dual search is achieved by passing the `--optimisation-strategy` argument to Pumpkin:
+It has to run where `sacct` is available the first time; `--sacct-file` keeps the Slurm accounting for later runs of the script.
 
-```bash
-uv run main.py --solver pumpkin \
-  --solver-flags "-f --optimisation-strategy linear-unsat-sat" \
-  -b 1000 -p 100 -n 5 \
-   <flavor> <data_file>
-```
+The solver configurations used in the experiments are:
+
+* CP-SAT, primal: `--solver cp-sat --solver-flags "-f --params \"use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\""`
+* CP-SAT, dual: `--solver cp-sat --solver-flags "-v --params \"optimize_with_core:true use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\""`
+* Pumpkin, primal: `--solver pumpkin --solver-flags=-f`
+* Pumpkin, dual: `--solver pumpkin --solver-flags "-f --optimisation-strategy linear-unsat-sat"`
+
+with `--lifting-solver gurobi -b 1000 -p 100 -n 5 -t 3600000` for lifting, and `-n 0` without it.
 
 ## How this works
 

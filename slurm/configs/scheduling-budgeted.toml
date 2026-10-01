@@ -1,0 +1,227 @@
+# CP 2026 budgeted experiment: lifting with at most 20000 lifting subproblems (-l) on the large
+# RCPSP/max instances, rerun for the corrigendum. Ported from gourd/scheduling-budgeted.toml
+# (removed in v0.3.0; see commit ecc8a50). Use a -Dworkspace distinct from scheduling.toml: the
+# gourd configs shared one output folder.
+#
+# Every main.py flag lives under [program.*]: scut keeps only arguments[0] (the flavor) and the
+# path| glob from [input.*] and appends `flavor path` to the command, so the input-side flags of
+# the gourd config (-n, -p, -b, -l, --lifting-solver) moved here. Each arm is spelled out because
+# only the lifted arms differ in more than one token, which [factors] cannot express.
+#
+# Arms per solver configuration:
+#   base-*      : -n 0, no lifting (identical under both lifting behaviors, so it runs once)
+#   lift-*      : -n 5, the corrected lifting (default since v0.3.0)
+#   lift-cp26-* : -n 5 --cp26-lifting-behavior, reproduces the lifting reported in the CP 2026 paper
+#
+# Solver flags are copied verbatim from the gourd config that produced the paper's results, with
+# one exception: Pumpkin primal passes `--solver-flags=-f` as a single token, since argparse rejects
+# a bare `-f` as the value of a separate token (gourd's `"\"-f\""` relied on its own quoting).
+#
+# The glob is a placeholder so that a pilot is the very same config over fewer instances. Run
+# names are relative to the fixed prefix of the glob, i.e. to the data directory, so pilot and
+# full-campaign runs of an instance share the same relative path -- as long as the pattern
+# starts with a wildcard, since a literal leading directory would become part of the prefix:
+#   full: -Dglob='**/*.dzn'
+#   pilot: a narrower pattern, e.g. -Dglob='**/*1.dzn' (~9% of RCPSP and RCPSP/max, but no data_la_x)
+#
+# Build, inspect and submit with:
+#   scut build slurm/configs/scheduling-budgeted.toml -Dworkspace=... -Dproject_dir=... -Drcpsp_max_large=... -Dglob='**/*.dzn' -v
+#   scut plan      # one fully resolved argv, before spending an array on it
+#   scut submit    # re-runnable: drains as much of the backlog as the quota allows
+#   scut nodes     # after completion: which node ran each task
+#   report/export.py ${workspace}/experiments/latest -o runs.csv -b bounds.csv
+
+experiment_root = "${workspace}/experiments"
+
+[input.rcpsp-max]
+arguments = ["max", "path|${rcpsp_max_large}/${glob}"]
+
+# --- pumpkin-lb -----------------------------------------------------------------------------------
+
+[program.base-pumpkin-lb]
+command = [
+    "${project_dir}/main.py",
+    "--lifting-solver", "gurobi",
+    "-n", "0",
+    "-p", "100",
+    "-b", "1000",
+    "-l", "20000",
+    "--solver", "pumpkin",
+    "--solver-flags", "-f --optimisation-strategy linear-unsat-sat",
+    "-t", "3600000",
+]
+output_envs = true
+
+[program.lift-pumpkin-lb]
+command = [
+    "${project_dir}/main.py",
+    "--lifting-solver", "gurobi",
+    "-n", "5",
+    "-p", "100",
+    "-b", "1000",
+    "-l", "20000",
+    "--solver", "pumpkin",
+    "--solver-flags", "-f --optimisation-strategy linear-unsat-sat",
+    "-t", "3600000",
+]
+output_envs = true
+
+[program.lift-cp26-pumpkin-lb]
+command = [
+    "${project_dir}/main.py",
+    "--lifting-solver", "gurobi",
+    "-n", "5",
+    "--cp26-lifting-behavior",
+    "-p", "100",
+    "-b", "1000",
+    "-l", "20000",
+    "--solver", "pumpkin",
+    "--solver-flags", "-f --optimisation-strategy linear-unsat-sat",
+    "-t", "3600000",
+]
+output_envs = true
+
+# --- pumpkin-ub -----------------------------------------------------------------------------------
+
+[program.base-pumpkin-ub]
+command = [
+    "${project_dir}/main.py",
+    "--lifting-solver", "gurobi",
+    "-n", "0",
+    "-p", "100",
+    "-b", "1000",
+    "-l", "20000",
+    "--solver", "pumpkin",
+    "--solver-flags=-f",
+    "-t", "3600000",
+]
+output_envs = true
+
+[program.lift-pumpkin-ub]
+command = [
+    "${project_dir}/main.py",
+    "--lifting-solver", "gurobi",
+    "-n", "5",
+    "-p", "100",
+    "-b", "1000",
+    "-l", "20000",
+    "--solver", "pumpkin",
+    "--solver-flags=-f",
+    "-t", "3600000",
+]
+output_envs = true
+
+[program.lift-cp26-pumpkin-ub]
+command = [
+    "${project_dir}/main.py",
+    "--lifting-solver", "gurobi",
+    "-n", "5",
+    "--cp26-lifting-behavior",
+    "-p", "100",
+    "-b", "1000",
+    "-l", "20000",
+    "--solver", "pumpkin",
+    "--solver-flags=-f",
+    "-t", "3600000",
+]
+output_envs = true
+
+# --- cp-sat-lb ------------------------------------------------------------------------------------
+
+[program.base-cp-sat-lb]
+command = [
+    "${project_dir}/main.py",
+    "--lifting-solver", "gurobi",
+    "-n", "0",
+    "-p", "100",
+    "-b", "1000",
+    "-l", "20000",
+    "--solver", "cp-sat",
+    "--solver-flags", "-v --params \"optimize_with_core:true use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
+    "-t", "3600000",
+]
+output_envs = true
+
+[program.lift-cp-sat-lb]
+command = [
+    "${project_dir}/main.py",
+    "--lifting-solver", "gurobi",
+    "-n", "5",
+    "-p", "100",
+    "-b", "1000",
+    "-l", "20000",
+    "--solver", "cp-sat",
+    "--solver-flags", "-v --params \"optimize_with_core:true use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
+    "-t", "3600000",
+]
+output_envs = true
+
+[program.lift-cp26-cp-sat-lb]
+command = [
+    "${project_dir}/main.py",
+    "--lifting-solver", "gurobi",
+    "-n", "5",
+    "--cp26-lifting-behavior",
+    "-p", "100",
+    "-b", "1000",
+    "-l", "20000",
+    "--solver", "cp-sat",
+    "--solver-flags", "-v --params \"optimize_with_core:true use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
+    "-t", "3600000",
+]
+output_envs = true
+
+# --- cp-sat-ub ------------------------------------------------------------------------------------
+
+[program.base-cp-sat-ub]
+command = [
+    "${project_dir}/main.py",
+    "--lifting-solver", "gurobi",
+    "-n", "0",
+    "-p", "100",
+    "-b", "1000",
+    "-l", "20000",
+    "--solver", "cp-sat",
+    "--solver-flags", "-f --params \"use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
+    "-t", "3600000",
+]
+output_envs = true
+
+[program.lift-cp-sat-ub]
+command = [
+    "${project_dir}/main.py",
+    "--lifting-solver", "gurobi",
+    "-n", "5",
+    "-p", "100",
+    "-b", "1000",
+    "-l", "20000",
+    "--solver", "cp-sat",
+    "--solver-flags", "-f --params \"use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
+    "-t", "3600000",
+]
+output_envs = true
+
+[program.lift-cp26-cp-sat-ub]
+command = [
+    "${project_dir}/main.py",
+    "--lifting-solver", "gurobi",
+    "-n", "5",
+    "--cp26-lifting-behavior",
+    "-p", "100",
+    "-b", "1000",
+    "-l", "20000",
+    "--solver", "cp-sat",
+    "--solver-flags", "-f --params \"use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
+    "-t", "3600000",
+]
+output_envs = true
+
+[slurm]
+experiment_name = "schedule-budgeted"
+partition = "compute-p2"
+account = "research-eemcs-st"
+
+[resource_limits]
+time_limit_minutes = 65
+cpus = 1
+mem_per_cpu = 4000

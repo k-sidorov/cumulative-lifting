@@ -84,7 +84,7 @@ def collect_large_row_cover_sets(durations, A, b, cover_card, pool_size):
     return covers
 
 
-def collect_row_cover_sets(durations, A, b, cover_card, pool_size, use_fixed_comparison=False):
+def collect_row_cover_sets(durations, A, b, cover_card, pool_size, cp26_lifting_behavior=False):
     covers = list()
     # For each value in A, precompute the indices where this value is encountered,
     # together with the longest segment in it
@@ -96,11 +96,12 @@ def collect_row_cover_sets(durations, A, b, cover_card, pool_size, use_fixed_com
             inv_A_longest[a] = ix
         else:
             inv_A[a].add(ix)
-            if use_fixed_comparison:
-                if durations[ix] > durations[inv_A_longest[a]]:
+            if cp26_lifting_behavior:
+                # Legacy CP 2026 behavior: compares a duration to an index
+                if durations[ix] > inv_A_longest[a]:
                     inv_A_longest[a] = ix
             else:
-                if durations[ix] > inv_A_longest[a]:
+                if durations[ix] > durations[inv_A_longest[a]]:
                     inv_A_longest[a] = ix
     # Add all binary covers
     for x, a in enumerate(A):
@@ -143,13 +144,13 @@ def collect_row_cover_sets(durations, A, b, cover_card, pool_size, use_fixed_com
     return covers
 
 
-def collect_cover_sets(durations, A, b, cover_card, pool_size, use_fixed_comparison=False):
+def collect_cover_sets(durations, A, b, cover_card, pool_size, cp26_lifting_behavior=False):
     assert cover_card >= 2
     covers = set()
     for row_ix in range(len(A)):
         row_covers = collect_row_cover_sets(
             durations, A[row_ix, :], b[row_ix], cover_card, pool_size,
-            use_fixed_comparison=use_fixed_comparison
+            cp26_lifting_behavior=cp26_lifting_behavior
         )
         logger.info(
             f"Received {len(row_covers)} covers for row #{row_ix+1}"
@@ -185,7 +186,8 @@ def lifting_subproblem(A, b, lhs, next_ix, used_indices, milp):
         raise e
 
 
-def lift_cover(durations, A, b, cover, milp, worst_pool_bound: float = float('-inf'), remaining_calls=None):
+def lift_cover(durations, A, b, cover, milp, worst_pool_bound: float = float('-inf'), remaining_calls=None,
+               cp26_lifting_behavior=False):
     lhs = np.zeros((A.shape[1],), dtype=int)
     rhs = len(cover) - 1
     used_indices = set()
@@ -199,7 +201,10 @@ def lift_cover(durations, A, b, cover, milp, worst_pool_bound: float = float('-i
         reverse=True,
     )
     current_energy = np.dot(lhs, durations) / rhs
-    remaining_energy = sum(durations[i] for i in remaining)
+    # Legacy CP 2026 behavior: the remaining energy is scaled by the RHS, which
+    # underestimates the ELB upper bound and can stop the lifting prematurely
+    energy_scale = rhs if cp26_lifting_behavior else 1
+    remaining_energy = sum(durations[i] for i in remaining) / energy_scale
     for step, next_ix in enumerate(remaining):
         if remaining_calls is not None and n_calls >= remaining_calls:
             logger.info("Exhausted the MILP budget")
@@ -224,7 +229,7 @@ def lift_cover(durations, A, b, cover, milp, worst_pool_bound: float = float('-i
         lhs[next_ix] = rhs - max_lhs
         used_indices.add(next_ix)
         current_energy += lhs[next_ix] * durations[next_ix] / rhs
-        remaining_energy -= durations[next_ix]
+        remaining_energy -= durations[next_ix] / energy_scale
     if np.any(lhs < 0):
         logger.warning(f"The inequality from the cover {cover} has "
                        f"{sum(lhs < 0)} negative coefficients")
@@ -238,8 +243,8 @@ def lift_cover(durations, A, b, cover, milp, worst_pool_bound: float = float('-i
     return ((lhs, rhs), n_calls)
 
 
-def process_cumulative_constraints(durations, A, b, cover_card, pool_size, max_lifting_calls, milp, max_cons: int, use_fixed_comparison=False):
-    cover_sets = collect_cover_sets(durations, A, b, cover_card, pool_size, use_fixed_comparison=use_fixed_comparison)
+def process_cumulative_constraints(durations, A, b, cover_card, pool_size, max_lifting_calls, milp, max_cons: int, cp26_lifting_behavior=False):
+    cover_sets = collect_cover_sets(durations, A, b, cover_card, pool_size, cp26_lifting_behavior=cp26_lifting_behavior)
     logger.info(f"Received {len(cover_sets)} cover sets")
     visited_covers = list()
     pool = []  # min-heap of (elb, uid, lhs, rhs); tracks best max_cons constraints
@@ -255,7 +260,8 @@ def process_cumulative_constraints(durations, A, b, cover_card, pool_size, max_l
         worst_pool_bound = pool[0][0] if len(pool) >= max_cons else float('-inf')
         (lhs, rhs), n_calls_cover = lift_cover(durations, A, b, cover, milp,
                                                worst_pool_bound=worst_pool_bound,
-                                               remaining_calls=remaining_calls)
+                                               remaining_calls=remaining_calls,
+                                               cp26_lifting_behavior=cp26_lifting_behavior)
         n_calls += n_calls_cover
         if remaining_calls is not None:
             remaining_calls -= n_calls_cover
@@ -282,14 +288,15 @@ def process_cumulative_constraints(durations, A, b, cover_card, pool_size, max_l
     return [(lhs, rhs) for _, _, lhs, rhs in sorted(pool, key=lambda x: -x[0])]
 
 
-def run_lifting(model, max_cons, cover_card, pool_size, max_lifting_calls, milp, use_fixed_comparison=False):
+def run_lifting(model, max_cons, cover_card, pool_size, max_lifting_calls, milp, cp26_lifting_behavior=False):
     if max_cons == 0:
         return model.copy()
+    logger.info(f"Lifting behavior: {'cp26' if cp26_lifting_behavior else 'fixed'}")
     intervals, A, b = extract_cumulative_matrix(model.constraints)
     durations = [d for _, _, d in intervals]
     cons = process_cumulative_constraints(
         durations, A, b, cover_card, pool_size, max_lifting_calls, milp, max_cons,
-        use_fixed_comparison=use_fixed_comparison
+        cp26_lifting_behavior=cp26_lifting_behavior
     )
     logger.info(f'Received {len(cons)} candidate cumulative constraints')
     for ub in range(1, cover_card):

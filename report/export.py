@@ -1,73 +1,203 @@
 #!/usr/bin/env python3
+"""
+Produces the CSV report of the lifting runs from a scut experiment tree.
+
+A port of the gourd-era gourd/report/export.py (see commit ecc8a50), which produced the CSVs behind
+the CP 2026 paper. The stdout/stderr parsing and both CSV layouts are kept as they were, so that
+the corrigendum numbers differ from the paper's only through the runs themselves; the only change
+to the parsing is splitting stdout on '\\n' (it was '/n') when reading UNSAT statistics.
+
+What gourd's status CSV used to provide now comes from three places:
+  * tasks.json, for the program, the input flavor and file, and the Slurm job id of each run;
+  * the run directory written by scut's wrapper: argv.json (what was run, and when it started)
+    and the final `meta` event in events/ (exit code, and the signal it was killed by, if any);
+  * Slurm accounting (sacct), for the final job state, the node, and the peak memory.
+
+Columns appended to the gourd-era layouts: `experiment` (the config's Slurm experiment name),
+`lifting_behavior` (`fixed` or `cp26` for lifted runs, empty otherwise) and `node`.
+"""
 
 import argparse
-from pathlib import Path
 from copy import deepcopy
 import csv
 import json
-import os
+from pathlib import Path
+import shlex
 import subprocess
+import sys
 
 
-def parse_duration(gourd_dur_string: str) -> float:
-    if gourd_dur_string.endswith("s"):
-        return float(gourd_dur_string.replace("s", ""))
-    elif "N/A" in gourd_dur_string:
+SACCT_FIELDS = ["JobID", "State", "Elapsed", "MaxRSS", "NodeList"]
+SACCT_CHUNK = 200
+
+
+def query_sacct(job_ids):
+    out = []
+    for i in range(0, len(job_ids), SACCT_CHUNK):
+        cmd = ["sacct", "-j", ",".join(job_ids[i:i + SACCT_CHUNK]),
+               f"--format={','.join(SACCT_FIELDS)}", "--parsable2", "--noheader"]
+        r = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        out.append(r.stdout)
+    return "".join(out)
+
+
+def parse_elapsed(s):
+    """Slurm's [D-]HH:MM:SS, in seconds."""
+    days, _, hms = s.rpartition("-")
+    h, m, sec = (int(x) for x in hms.split(":"))
+    return (int(days) if days else 0) * 86400 + h * 3600 + m * 60 + sec
+
+
+def parse_rss_kib(s):
+    """Slurm's MaxRSS (e.g. 123456K, 1.5G), in KiB, the unit of getrusage's ru_maxrss."""
+    if not s:
         return None
-    assert False, gourd_dur_string
+    scale = {"K": 1, "M": 1024, "G": 1024 ** 2, "T": 1024 ** 3}
+    if s[-1] in scale:
+        return int(float(s[:-1]) * scale[s[-1]])
+    return int(s) // 1024
 
 
-def parse_gourd_report(path):
-    rows = dict()
-    with path.open() as csvfile:
-        reader = csv.DictReader(csvfile)
-        for csv_row in reader:
-            args = (csv_row["input args"]
-                    .replace('"', '')
-                    .replace("[", "")
-                    .replace("]", "")
-                    .split(', '))
-            assert csv_row['program'].endswith('-lb') or csv_row['program'].endswith('-ub') or csv_row['program'] == 'unl', csv_row
-            solver = csv_row['program'].replace('-lb', '').replace('-ub', '')
-            search_direction = 'dual' if csv_row['program'].endswith('-lb') or solver == 'unl' else 'primal'
-            lift = any(p == '-n' and int(n) > 0 for p, n in zip(args[:-1], args[1:]))
-            problem = 'rcpsp-max' if 'max' in args else ('rcpsp' if 'std' in args else None)
-            *_, path = args
-            *_, collection, instance = path.split('/')
-            row = None
-            if "job finished" in csv_row["slurm"]:
-                row = {
-                    'solver': solver,
-                    'search_direction': search_direction,
-                    'lift': lift,
-                    'problem': problem,
-                    'collection': collection,
-                    'instance': instance,
-                    'status': 'ok',
-                    'exit_code': int(csv_row['exit']) if csv_row['exit'] != 'N/A' else None,
-                    'full_time': parse_duration(csv_row['wall time']),
-                    'peak_memory': int(csv_row['max rss']) if csv_row['max rss'] != 'N/A' else None,
-                }
-            elif "running" in csv_row['slurm'] or "pending" in csv_row['slurm']:
+def parse_sacct(text):
+    """JobID of an array task -> its state, elapsed time, node and peak memory.
+
+    The state and node are on the row of the array task itself; MaxRSS is only on its steps
+    (<id>.batch, <id>.extern), so the maximum over the steps is taken.
+    """
+    acct = dict()
+    for line in text.splitlines():
+        parts = line.split("|")
+        if len(parts) < len(SACCT_FIELDS):
+            continue
+        job_id, state, elapsed, max_rss, node = parts[:5]
+        base, _, step = job_id.partition(".")
+        entry = acct.setdefault(base, {"state": None, "elapsed": None, "node": None, "max_rss": None})
+        if step:
+            rss = parse_rss_kib(max_rss)
+            if rss is not None and (entry["max_rss"] is None or rss > entry["max_rss"]):
+                entry["max_rss"] = rss
+        else:
+            # "CANCELLED by <uid>" -> "CANCELLED"
+            entry["state"] = state.split()[0] if state else None
+            entry["elapsed"] = parse_elapsed(elapsed) if elapsed else None
+            entry["node"] = node
+    return acct
+
+
+def load_sacct(tasks, sacct_file):
+    if sacct_file is not None and sacct_file.exists():
+        return parse_sacct(sacct_file.read_text())
+    job_ids = sorted({t["slurm_job_id"].split("_")[0] for t in tasks if t.get("slurm_job_id")})
+    if not job_ids:
+        return dict()
+    try:
+        text = query_sacct(job_ids)
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        print(f"sacct unavailable ({e}); job states, nodes and peak memory are left empty", file=sys.stderr)
+        return dict()
+    if sacct_file is not None:
+        sacct_file.write_text(text)
+    return parse_sacct(text)
+
+
+def final_meta(run_dir):
+    """The wrapper's last `meta` event of the latest attempt, or None if it never exited cleanly."""
+    files = sorted((run_dir / "events").glob("events-*.jsonl"),
+                   key=lambda p: int(p.stem.split("-")[1]))
+    if not files:
+        return None
+    meta = None
+    with files[-1].open() as f:
+        for line in f:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
                 continue
-            else:
-                row = {
-                    'solver': solver,
-                    'search_direction': search_direction,
-                    'lift': lift,
-                    'problem': problem,
-                    'collection': collection,
-                    'instance': instance,
-                    'status': (
-                        'timeout' if "timed out" in csv_row['slurm'] else
-                        'memout' if "out of memory" in csv_row['slurm'] else
-                        'failed' if "failed" in csv_row['slurm'] else None
-                    ),
-                    'exit_code': int(csv_row['exit']) if csv_row['exit'] != 'N/A' else None,
-                }
-            assert row['status'] is not None, (row, csv_row)
-            rows[csv_row['run id']] = row
-    return rows
+            if event.get("type") == "meta" and "exit_code" in event:
+                meta = event
+    return meta
+
+
+def solver_flags(argv):
+    """The value of --solver-flags, whether passed as one token or two."""
+    for key, value in zip(argv, argv[1:] + [None]):
+        if key == "--solver-flags":
+            return value or ""
+        if key.startswith("--solver-flags="):
+            return key.split("=", 1)[1]
+    return ""
+
+
+def option(argv, name):
+    for key, value in zip(argv, argv[1:]):
+        if key == name:
+            return value
+    return None
+
+
+def describe_run(task, argv):
+    """The labels gourd/report/export.py derived from gourd's program name and input arguments."""
+    if Path(argv[0]).name == "rcpsp":
+        solver = "unl"
+        search_direction = "dual"
+    else:
+        solver = option(argv, "--solver")
+        flags = shlex.split(solver_flags(argv))
+        dual = ("linear-unsat-sat" in flags) if solver == "pumpkin" else ("-v" in flags)
+        search_direction = "dual" if dual else "primal"
+    n = option(argv, "-n")
+    lift = solver != "unl" and int(n if n is not None else 5) > 0  # 5 is the default of main.py -n
+    *_, collection, instance = task["file"].split("/")
+    return {
+        "solver": solver,
+        "search_direction": search_direction,
+        "lift": lift,
+        "lifting_behavior": ("cp26" if "--cp26-lifting-behavior" in argv else "fixed") if lift else None,
+        "problem": {"max": "rcpsp-max", "std": "rcpsp"}[task["kind"]],
+        "collection": collection,
+        "instance": instance,
+    }
+
+
+def run_status(meta, acct):
+    """Gourd's run status: ok, timeout, memout or failed; None while the run is pending or running.
+
+    A run that exited by itself is `ok` whatever its exit code, as with gourd: main.py exits with 1
+    when the preprocessing used up the time limit, and Slurm records that as FAILED. Slurm's
+    TIMEOUT and OUT_OF_MEMORY take precedence, since the wrapper also sees the kill as an exit.
+    """
+    state = acct.get("state")
+    if state in {"PENDING", "RUNNING", "REQUEUED", "RESIZING", "SUSPENDED"}:
+        return None
+    if state == "OUT_OF_MEMORY":
+        return "memout"
+    if state == "TIMEOUT":
+        return "timeout"
+    if meta is not None:
+        if "killed_by" in meta:
+            return "timeout" if state is None else "failed"
+        return "ok"
+    return "failed"
+
+
+def base_row_for(task, experiment, acct_by_job):
+    run_dir = Path(task["run_dir"])
+    if not (run_dir / "argv.json").exists():
+        return None  # never started
+    argv = json.loads((run_dir / "argv.json").read_text())
+    meta = final_meta(run_dir)
+    acct = acct_by_job.get(task.get("slurm_job_id") or "", {})
+    status = run_status(meta, acct)
+    if status is None:
+        return None
+    row = {"experiment": experiment, **describe_run(task, argv), "status": status, "node": acct.get("node")}
+    row["exit_code"] = meta["exit_code"] if meta is not None else None
+    if status == "ok":
+        # argv.json is written right before the program starts, the final meta event right after it exits
+        row["full_time"] = (meta["_ts"] - (run_dir / "argv.json").stat().st_mtime
+                            if "_ts" in meta else acct.get("elapsed"))
+        row["peak_memory"] = acct.get("max_rss")
+    return row
 
 
 def parse_mzn(base_row, stdout):
@@ -81,7 +211,7 @@ def parse_mzn(base_row, stdout):
         # UNSAT, report the stats (time, conflicts, propagations) at UNSAT verdict
         unsat_row = deepcopy(base_row)
         reading = False
-        for line in stdout.split('/n'):
+        for line in stdout.split('\n'):
             if "UNSAT" in line:
                 reading = True
                 continue
@@ -137,7 +267,7 @@ def parse_cpsat_verbose(base_row, stdout):
         _, unsat_block = stdout.split("=====UNSATISFIABLE=====")
         assert base_row['instance_status'] == 'unsat', base_row
         row = deepcopy(base_row)
-        for line in stdout.split('/n'):
+        for line in stdout.split('\n'):
             if "%%%mzn-stat: " in line:
                 k, v = line.split(": ")[1].split("=")
                 if k == 'solveTime':
@@ -175,7 +305,10 @@ def parse_cpsat_verbose(base_row, stdout):
 
 
 def main(args):
-    in_rows = parse_gourd_report(args.input_file)
+    meta = json.loads((args.experiment_dir / "tasks.json").read_text())
+    experiment = meta["slurm"]["experiment_name"]
+    tasks = meta["tasks"]
+    acct_by_job = load_sacct(tasks, args.sacct_file)
     with args.output_file.open("w") as csvfile, args.bounds_output_file.open("w") as boundfile:
         writer = csv.DictWriter(
             csvfile,
@@ -196,7 +329,10 @@ def main(args):
                 'time',
                 'preprocessing_time',
                 'conflicts',
-                'propagations'
+                'propagations',
+                'experiment',
+                'lifting_behavior',
+                'node',
             ],
             extrasaction='ignore',
         )
@@ -217,20 +353,18 @@ def main(args):
                 'elastic_lower_bound',
                 'best_lhs',
                 'best_rhs',
+                'experiment',
+                'lifting_behavior',
+                'node',
             ],
             extrasaction='ignore',
         )
         bound_writer.writeheader()
-        runs = [
-            run_dir
-            for solver_dir in args.logdir.iterdir()
-            for run_dir in solver_dir.iterdir()
-        ]
-        for index, run_dir in enumerate(runs):
-            # TODO remove this continue
-            if run_dir.name not in in_rows:
+        for index, task in enumerate(tasks):
+            base_row = base_row_for(task, experiment, acct_by_job)
+            if base_row is None:
                 continue
-            base_row = in_rows[run_dir.name]
+            run_dir = Path(task["run_dir"])
             base_row['n_added_cumulative'] = 0
             base_row['n_added_disjunctive'] = 0
             base_row['elastic_lower_bound'] = 0.0
@@ -282,7 +416,7 @@ def main(args):
                         break
             if status == 'unknown':
                 # CP-SAT dual search reports UNKNOWN when it fails to discover a solution;
-                # process the output 
+                # process the output
                 if base_row['solver'] == 'cp-sat' and base_row['search_direction'] == 'dual':
                     status = 'sat'
             base_row['instance_status'] = status
@@ -298,7 +432,7 @@ def main(args):
                     (run_dir / "stdout").read_text()
                 )
 
-            print(f'Parsed {index} out of {len(runs)}', end='\r')
+            print(f'Parsed {index} out of {len(tasks)}', end='\r')
             for row in rows:
                 writer.writerow(row)
             if base_row['lift']:
@@ -308,16 +442,9 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Produces the CSV report of the lifting runs")
     parser.add_argument(
-        "logdir",
+        "experiment_dir",
         type=Path,
-        help="Directory with lifting script outputs",
-    )
-    parser.add_argument(
-        "--input-file",
-        "-i",
-        type=Path,
-        required=True,
-        help="CSV file with the Gourd report file"
+        help="scut experiment directory holding tasks.json, e.g. <workspace>/experiments/latest",
     )
     parser.add_argument(
         "--output-file",
@@ -332,6 +459,12 @@ if __name__ == "__main__":
         type=Path,
         required=True,
         help="CSV file with the best lifted cuts",
+    )
+    parser.add_argument(
+        "--sacct-file",
+        type=Path,
+        default=None,
+        help="Cache of the raw sacct output: read if it exists, otherwise written after querying sacct",
     )
     args = parser.parse_args()
     main(args)

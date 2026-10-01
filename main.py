@@ -102,7 +102,7 @@ def main(args):
                         pool_size=args.cover_pool_size,
                         max_lifting_calls=args.max_lifting_calls,
                         milp=solve_milp,
-                        use_fixed_comparison=args.use_fixed_comparison)
+                        cp26_lifting_behavior=args.cp26_lifting_behavior)
     solver = SolverLookup.get(name=f'minizinc:{args.solver}', model=model)
     logger.info("Finished preprocessing, FlatZinc output pending")
     elapsed_time = time.perf_counter_ns() - start_time
@@ -136,7 +136,8 @@ if __name__ == "__main__":
                         help="Number of cover sets to be considered")
     parser.add_argument('-l', '--max-lifting-calls', type=int, default=None,
                         help="Maximum number of lifting subproblems to be solved")
-    parser.add_argument('--use-fixed-comparison', action='store_true',
-                        help="Replace the broken max-duration computation from the CP 2026 version with a corrected one")
+    parser.add_argument('--cp26-lifting-behavior', action='store_true',
+                        help="Recover two legacy incorrect behaviors from the CP 2026 version: "
+                             "the max-duration representative comparison and the ELB early-stop scaling")
     args = parser.parse_args()
     main(args)
