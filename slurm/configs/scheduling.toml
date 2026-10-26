@@ -9,7 +9,8 @@
 # Arms per solver configuration:
 #   base-*      : -n 0, no lifting (identical under both lifting behaviors, so it runs once)
 #   lift-*      : -n 5, the corrected lifting (default since v0.3.0)
-#   lift-cp26-* : -n 5 --cp26-lifting-behavior, reproduces the lifting reported in the CP 2026 paper
+#   lift-cp26-* : -n 5 --cp26-lifting-behavior, reproduces the lifting behind the main-text results of
+#                 the CP 2026 paper (commit 4125e99: the legacy representative, no early stop)
 #
 # Solver flags are copied verbatim from the gourd config that produced the paper's results, with
 # one exception: Pumpkin primal passes `--solver-flags=-f` as a single token, since argparse rejects
@@ -23,7 +24,8 @@
 #   pilot: a narrower pattern, e.g. -Dglob='**/*1.dzn' (~9% of RCPSP and RCPSP/max, but no data_la_x)
 #
 # Build, inspect and submit with:
-#   scut build slurm/configs/scheduling.toml -Dworkspace=... -Dproject_dir=... -Drcpsp=... -Drcpsp_max=... -Dglob='**/*.dzn' -v
+#   scut build slurm/configs/scheduling.toml -Dworkspace=... -Dproject_dir=... -Drcpsp=... -Drcpsp_max=... \
+#       -Dpumpkin_repo=... -Dpumpkin_commit=<the paper's Pumpkin commit> -Dcpsat_binary=.../bin/fzn-cp-sat -Dglob='**/*.dzn' -v
 #   scut plan      # one fully resolved argv, before spending an array on it
 #   scut submit    # re-runnable: drains as much of the backlog as the quota allows
 #   scut nodes     # after completion: which node ran each task
@@ -36,6 +38,30 @@ arguments = ["max", "path|${rcpsp_max}/${glob}"]
 
 [input.rcpsp]
 arguments = ["std", "path|${rcpsp}/${glob}"]
+
+# --- dependencies ---------------------------------------------------------------------------------
+# What the commands run without naming it: main.py reaches the solvers through minizinc's registry.
+# scut fingerprints these at build and refuses to submit once any of them changes, so that a
+# campaign cannot drift onto another solver build (as Pumpkin did between the paper and the
+# corrigendum). The `command` probes run on the machine that builds and submits, with its PATH, so
+# that PATH should be the one the compute nodes get.
+
+[dependency.lifting]
+git = "${project_dir}"    # main.py, its modules, and uv.lock (incl. gurobipy) via `uv run --frozen`
+
+[dependency.pumpkin]
+git = "${pumpkin_repo}"                                 # the source, which must be at...
+expect = "${pumpkin_commit}"                            # ...the Pumpkin version of the paper
+file = "${pumpkin_repo}/target/release/pumpkin-solver"  # the binary its .msc points to
+
+[dependency.cp-sat]
+file = "${cpsat_binary}"  # fzn-cp-sat, from the OR-Tools distribution
+
+[dependency.minizinc]
+command = ["minizinc", "--version"]
+
+[dependency.minizinc-solvers]
+command = ["minizinc", "--solvers-json"]  # which build `--solver pumpkin` / `cp-sat` resolves to
 
 # --- pumpkin-lb -----------------------------------------------------------------------------------
 

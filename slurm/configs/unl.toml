@@ -2,9 +2,10 @@
 # the corrigendum. Ported from gourd/unl.toml (removed in v0.3.0; see commit ecc8a50).
 #
 # Arms:
-#   lift-cp26-pumpkin-lb : exactly the configuration behind the paper's results, i.e. the legacy
+#   lift-cp26-pumpkin-lb : exactly the configuration behind the paper's results, i.e. the main-text
 #                          lifting behavior and HiGHS for the lifting subproblems -- gourd/unl.toml
-#                          omitted --lifting-solver, so main.py fell back to its default
+#                          omitted --lifting-solver, so main.py fell back to its default. With -b 1
+#                          the legacy representative never matters (there are no ternary covers)
 #   lift-pumpkin-lb      : the configuration the paper describes: the corrected lifting with Gurobi
 #                          for the lifting subproblems, as in the other experiments
 #   unl                  : Pumpkin with the disjointness extension, from a separate Pumpkin checkout
@@ -14,7 +15,7 @@
 #
 # Build, inspect and submit with:
 #   scut build slurm/configs/unl.toml -Dworkspace=... -Dproject_dir=... -Dunl_binary=.../target/release/examples/rcpsp \
-#       -Drcpsp=... -Drcpsp_max=... -Dglob='**/*.dzn' -v
+#       -Dunl_repo=... -Dunl_commit=... -Dpumpkin_repo=... -Dpumpkin_commit=... -Drcpsp=... -Drcpsp_max=... -Dglob='**/*.dzn' -v
 #   scut plan && scut submit
 #   scut nodes
 #   report/export.py ${workspace}/experiments/latest -o runs.csv -b bounds.csv
@@ -26,6 +27,29 @@ arguments = ["max", "path|${rcpsp_max}/${glob}"]
 
 [input.rcpsp]
 arguments = ["std", "path|${rcpsp}/${glob}"]
+
+# --- dependencies ---------------------------------------------------------------------------------
+# See scheduling.toml. The UnL binary is built from its own Pumpkin checkout, so it is pinned
+# separately from the Pumpkin that minizinc runs for the lifted arms.
+
+[dependency.lifting]
+git = "${project_dir}"    # main.py, its modules, and uv.lock (incl. gurobipy) via `uv run --frozen`
+
+[dependency.pumpkin]
+git = "${pumpkin_repo}"                                 # the source, which must be at...
+expect = "${pumpkin_commit}"                            # ...the Pumpkin version of the paper
+file = "${pumpkin_repo}/target/release/pumpkin-solver"  # the binary its .msc points to
+
+[dependency.unl]
+git = "${unl_repo}"
+expect = "${unl_commit}"  # the UnL version of the paper
+file = "${unl_binary}"
+
+[dependency.minizinc]
+command = ["minizinc", "--version"]
+
+[dependency.minizinc-solvers]
+command = ["minizinc", "--solvers-json"]  # which build `--solver pumpkin` resolves to
 
 [program.lift-cp26-pumpkin-lb]
 command = [

@@ -14,7 +14,13 @@ What gourd's status CSV used to provide now comes from three places:
   * Slurm accounting (sacct), for the final job state, the node, and the peak memory.
 
 Columns appended to the gourd-era layouts: `experiment` (the config's Slurm experiment name),
-`lifting_behavior` (`fixed` or `cp26` for lifted runs, empty otherwise) and `node`.
+`lifting_behavior` (`fixed`, `cp26` or `cp26-appendix-c` for lifted runs, empty otherwise) and
+`node`; the bounds CSV also gets `status`, `exit_code` and `preprocessing_completed`, so that runs
+which never finished the lifting can be told apart from runs that found no constraint.
+
+A run is reported once it has finished: scut's wrapper writes `outcome.json` when the program
+exits, so a run without it is still running, unless Slurm says that its job has ended (then it
+failed without the wrapper noticing, e.g. on a node failure). Runs still running are skipped.
 """
 
 import argparse
@@ -29,6 +35,8 @@ import sys
 
 SACCT_FIELDS = ["JobID", "State", "Elapsed", "MaxRSS", "NodeList"]
 SACCT_CHUNK = 200
+# Slurm states of a job that is not over yet: its accounting is not final
+ACTIVE_STATES = {"PENDING", "RUNNING", "REQUEUED", "RESIZING", "SUSPENDED", "CONFIGURING", "COMPLETING"}
 
 
 def query_sacct(job_ids):
@@ -85,19 +93,40 @@ def parse_sacct(text):
 
 
 def load_sacct(tasks, sacct_file):
-    if sacct_file is not None and sacct_file.exists():
-        return parse_sacct(sacct_file.read_text())
-    job_ids = sorted({t["slurm_job_id"].split("_")[0] for t in tasks if t.get("slurm_job_id")})
-    if not job_ids:
-        return dict()
+    """Slurm accounting of every task, from the cache in `sacct_file` where it is final.
+
+    The cache only answers for array tasks whose jobs had ended when it was written: a task that
+    is missing from it, or was still active then, is queried again, and the cache is rewritten.
+    Without sacct, the cache is used as it is.
+    """
+    cached = sacct_file.read_text() if sacct_file is not None and sacct_file.exists() else ""
+    acct = parse_sacct(cached)
+    task_ids = {t["slurm_job_id"] for t in tasks if t.get("slurm_job_id")}
+    stale = sorted({tid.split("_")[0] for tid in task_ids
+                    if acct.get(tid, {}).get("state") in (None, *ACTIVE_STATES)})
+    if not stale:
+        return acct
     try:
-        text = query_sacct(job_ids)
+        text = query_sacct(stale)
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
-        print(f"sacct unavailable ({e}); job states, nodes and peak memory are left empty", file=sys.stderr)
-        return dict()
+        print(f"sacct unavailable ({e}); the accounting of {len(stale)} job(s) is not final "
+              f"or missing, so their states, nodes and peak memory may be empty", file=sys.stderr)
+        return acct
+    # Fresh rows go last, so that they replace the cached rows of the same tasks
+    cached_rows = [line for line in cached.splitlines()
+                   if line.split("|")[0].split(".")[0].split("_")[0] not in stale]
+    merged = "\n".join(cached_rows + text.splitlines()) + "\n"
     if sacct_file is not None:
-        sacct_file.write_text(text)
-    return parse_sacct(text)
+        sacct_file.write_text(merged)
+    return parse_sacct(merged)
+
+
+def read_outcome(run_dir):
+    """scut's `outcome.json`: written atomically once the program has exited; None before."""
+    try:
+        return json.loads((run_dir / "outcome.json").read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
 
 
 def final_meta(run_dir):
@@ -135,6 +164,17 @@ def option(argv, name):
     return None
 
 
+def lifting_behavior(argv):
+    """main.py's --cp26-lifting-behavior [main|appendix-c], as the name of the lifting behavior."""
+    names = {"main": "cp26", "appendix-c": "cp26-appendix-c"}
+    for key, value in zip(argv, argv[1:] + [None]):
+        if key == "--cp26-lifting-behavior":
+            return names.get(value, "cp26")
+        if key.startswith("--cp26-lifting-behavior="):
+            return names[key.split("=", 1)[1]]
+    return "fixed"
+
+
 def describe_run(task, argv):
     """The labels gourd/report/export.py derived from gourd's program name and input arguments."""
     if Path(argv[0]).name == "rcpsp":
@@ -152,32 +192,38 @@ def describe_run(task, argv):
         "solver": solver,
         "search_direction": search_direction,
         "lift": lift,
-        "lifting_behavior": ("cp26" if "--cp26-lifting-behavior" in argv else "fixed") if lift else None,
+        "lifting_behavior": lifting_behavior(argv) if lift else None,
         "problem": {"max": "rcpsp-max", "std": "rcpsp"}[task["kind"]],
         "collection": collection,
         "instance": instance,
     }
 
 
-def run_status(meta, acct):
+def run_status(outcome, meta, acct):
     """Gourd's run status: ok, timeout, memout or failed; None while the run is pending or running.
 
     A run that exited by itself is `ok` whatever its exit code, as with gourd: main.py exits with 1
     when the preprocessing used up the time limit, and Slurm records that as FAILED. Slurm's
     TIMEOUT and OUT_OF_MEMORY take precedence, since the wrapper also sees the kill as an exit.
+
+    Whether the run is over comes from scut's `outcome.json` (or, for runs from before it, the
+    wrapper's final `meta` event) together with Slurm: with neither, the run is still going, even
+    when Slurm has no record of it yet. A job that Slurm reports as ended without an outcome failed.
     """
     state = acct.get("state")
-    if state in {"PENDING", "RUNNING", "REQUEUED", "RESIZING", "SUSPENDED"}:
+    if state in ACTIVE_STATES:
         return None
     if state == "OUT_OF_MEMORY":
         return "memout"
     if state == "TIMEOUT":
         return "timeout"
+    if outcome is not None:
+        return "ok" if outcome.get("signal") is None else ("timeout" if state is None else "failed")
     if meta is not None:
         if "killed_by" in meta:
             return "timeout" if state is None else "failed"
         return "ok"
-    return "failed"
+    return None if state is None else "failed"
 
 
 def base_row_for(task, experiment, acct_by_job):
@@ -185,17 +231,25 @@ def base_row_for(task, experiment, acct_by_job):
     if not (run_dir / "argv.json").exists():
         return None  # never started
     argv = json.loads((run_dir / "argv.json").read_text())
+    outcome = read_outcome(run_dir)
     meta = final_meta(run_dir)
     acct = acct_by_job.get(task.get("slurm_job_id") or "", {})
-    status = run_status(meta, acct)
+    status = run_status(outcome, meta, acct)
     if status is None:
         return None
     row = {"experiment": experiment, **describe_run(task, argv), "status": status, "node": acct.get("node")}
-    row["exit_code"] = meta["exit_code"] if meta is not None else None
+    row["exit_code"] = (outcome["exit_code"] if outcome is not None
+                        else meta["exit_code"] if meta is not None else None)
     if status == "ok":
-        # argv.json is written right before the program starts, the final meta event right after it exits
-        row["full_time"] = (meta["_ts"] - (run_dir / "argv.json").stat().st_mtime
-                            if "_ts" in meta else acct.get("elapsed"))
+        # argv.json is written right before the program starts; outcome.json (or, for runs from
+        # before it, the final meta event) right after it exits
+        started = (run_dir / "argv.json").stat().st_mtime
+        if outcome is not None and "finished_at" in outcome:
+            row["full_time"] = outcome["finished_at"] - started
+        elif meta is not None and "_ts" in meta:
+            row["full_time"] = meta["_ts"] - started
+        else:
+            row["full_time"] = acct.get("elapsed")
         row["peak_memory"] = acct.get("max_rss")
     return row
 
@@ -356,6 +410,9 @@ def main(args):
                 'experiment',
                 'lifting_behavior',
                 'node',
+                'status',
+                'exit_code',
+                'preprocessing_completed',
             ],
             extrasaction='ignore',
         )
@@ -370,6 +427,7 @@ def main(args):
             base_row['elastic_lower_bound'] = 0.0
             base_row['best_lhs'] = None
             base_row['best_rhs'] = None
+            base_row['preprocessing_completed'] = False
             # Read preprocessing time from stderr
             with (run_dir / "stderr").open() as f:
                 current_lhs = None
@@ -377,6 +435,7 @@ def main(args):
                 for line in f:
                     if 'Preprocessing phase completed in' in line:
                         base_row['preprocessing_time'] = 1e-3 * int(line.split()[-2])
+                        base_row['preprocessing_completed'] = True
                     elif "lifting subproblems" in line:
                         base_row['n_lifting_subproblems'] = int(line.split()[-3])
                     elif "candidate cumulative constraints" in line:

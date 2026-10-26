@@ -6,6 +6,18 @@ from cpmpy.expressions.globalconstraints import Cumulative
 
 import numpy as np
 
+# Lifting behaviors (see the corrigendum section of the README):
+#   fixed           : the corrected lifting
+#   cp26            : the lifting behind the main-text results of the CP 2026 paper (commit 4125e99):
+#                     the legacy max-duration representative and no early stop
+#   cp26-appendix-c : the lifting behind Appendix C of the paper (commit ecc8a50): the legacy
+#                     representative and the early stop with an underestimated ELB upper bound
+LIFTING_BEHAVIORS = ('fixed', 'cp26', 'cp26-appendix-c')
+
+
+def legacy_representative(lifting_behavior):
+    return lifting_behavior in ('cp26', 'cp26-appendix-c')
+
 def extract_cumulative_matrix(constraints):
     """
     Extract interval list, demand matrix A, and capacity vector b
@@ -84,7 +96,7 @@ def collect_large_row_cover_sets(durations, A, b, cover_card, pool_size):
     return covers
 
 
-def collect_row_cover_sets(durations, A, b, cover_card, pool_size, cp26_lifting_behavior=False):
+def collect_row_cover_sets(durations, A, b, cover_card, pool_size, lifting_behavior='fixed'):
     covers = list()
     # For each value in A, precompute the indices where this value is encountered,
     # together with the longest segment in it
@@ -96,7 +108,7 @@ def collect_row_cover_sets(durations, A, b, cover_card, pool_size, cp26_lifting_
             inv_A_longest[a] = ix
         else:
             inv_A[a].add(ix)
-            if cp26_lifting_behavior:
+            if legacy_representative(lifting_behavior):
                 # Legacy CP 2026 behavior: compares a duration to an index
                 if durations[ix] > inv_A_longest[a]:
                     inv_A_longest[a] = ix
@@ -144,13 +156,13 @@ def collect_row_cover_sets(durations, A, b, cover_card, pool_size, cp26_lifting_
     return covers
 
 
-def collect_cover_sets(durations, A, b, cover_card, pool_size, cp26_lifting_behavior=False):
+def collect_cover_sets(durations, A, b, cover_card, pool_size, lifting_behavior='fixed'):
     assert cover_card >= 2
     covers = set()
     for row_ix in range(len(A)):
         row_covers = collect_row_cover_sets(
             durations, A[row_ix, :], b[row_ix], cover_card, pool_size,
-            cp26_lifting_behavior=cp26_lifting_behavior
+            lifting_behavior=lifting_behavior
         )
         logger.info(
             f"Received {len(row_covers)} covers for row #{row_ix+1}"
@@ -187,7 +199,7 @@ def lifting_subproblem(A, b, lhs, next_ix, used_indices, milp):
 
 
 def lift_cover(durations, A, b, cover, milp, worst_pool_bound: float = float('-inf'), remaining_calls=None,
-               cp26_lifting_behavior=False):
+               lifting_behavior='fixed'):
     lhs = np.zeros((A.shape[1],), dtype=int)
     rhs = len(cover) - 1
     used_indices = set()
@@ -201,16 +213,19 @@ def lift_cover(durations, A, b, cover, milp, worst_pool_bound: float = float('-i
         reverse=True,
     )
     current_energy = np.dot(lhs, durations) / rhs
-    # Legacy CP 2026 behavior: the remaining energy is scaled by the RHS, which
-    # underestimates the ELB upper bound and can stop the lifting prematurely
-    energy_scale = rhs if cp26_lifting_behavior else 1
+    # Early stop: a lifted coefficient is at most the RHS, so a remaining task adds at most its
+    # duration to the ELB. The Appendix C behavior scales the remaining energy by the RHS instead,
+    # which underestimates the ELB upper bound and can stop the lifting prematurely. The main-text
+    # behavior has no early stop.
+    early_stop = lifting_behavior != 'cp26'
+    energy_scale = rhs if lifting_behavior == 'cp26-appendix-c' else 1
     remaining_energy = sum(durations[i] for i in remaining) / energy_scale
     for step, next_ix in enumerate(remaining):
         if remaining_calls is not None and n_calls >= remaining_calls:
             logger.info("Exhausted the MILP budget")
             break
         upper_bound_elb = current_energy + remaining_energy
-        if upper_bound_elb <= worst_pool_bound:
+        if early_stop and upper_bound_elb <= worst_pool_bound:
             logger.debug(
                 f"Early stop for cover {cover}: upper bound ELB {upper_bound_elb:.4f} "
                 f"<= worst pool bound {worst_pool_bound:.4f}, "
@@ -243,25 +258,29 @@ def lift_cover(durations, A, b, cover, milp, worst_pool_bound: float = float('-i
     return ((lhs, rhs), n_calls)
 
 
-def process_cumulative_constraints(durations, A, b, cover_card, pool_size, max_lifting_calls, milp, max_cons: int, cp26_lifting_behavior=False):
-    cover_sets = collect_cover_sets(durations, A, b, cover_card, pool_size, cp26_lifting_behavior=cp26_lifting_behavior)
+def process_cumulative_constraints(durations, A, b, cover_card, pool_size, max_lifting_calls, milp, max_cons: int, lifting_behavior='fixed'):
+    cover_sets = collect_cover_sets(durations, A, b, cover_card, pool_size, lifting_behavior=lifting_behavior)
     logger.info(f"Received {len(cover_sets)} cover sets")
     visited_covers = list()
-    pool = []  # min-heap of (elb, uid, lhs, rhs); tracks best max_cons constraints
+    # Min-heap of ((elb, -order), lhs, rhs) tracking the best max_cons constraints. Among equal
+    # ELBs the earlier constraint ranks higher, as in the stable sort of the original version;
+    # the insertion order also makes the selection deterministic.
+    pool = []
     n_dom = 0
     n_skip = 0
     n_calls = 0
+    n_recorded = 0
     remaining_calls = None if max_lifting_calls is None else max_lifting_calls
     for cover in cover_sets:
         # assert np.any(np.sum(A[:, list(cover)], axis=1) > b), (A[:, list(cover)], b)
         if is_visited_cover(cover, visited_covers):
             n_skip += 1
             continue
-        worst_pool_bound = pool[0][0] if len(pool) >= max_cons else float('-inf')
+        worst_pool_bound = pool[0][0][0] if len(pool) >= max_cons else float('-inf')
         (lhs, rhs), n_calls_cover = lift_cover(durations, A, b, cover, milp,
                                                worst_pool_bound=worst_pool_bound,
                                                remaining_calls=remaining_calls,
-                                               cp26_lifting_behavior=cp26_lifting_behavior)
+                                               lifting_behavior=lifting_behavior)
         n_calls += n_calls_cover
         if remaining_calls is not None:
             remaining_calls -= n_calls_cover
@@ -277,26 +296,28 @@ def process_cumulative_constraints(durations, A, b, cover_card, pool_size, max_l
                 break
         if not is_dominated:
             elb = sum(w * d for w, d in zip(lhs, durations)) / rhs
-            entry = (elb, id(lhs), lhs, rhs)
+            entry = ((elb, -n_recorded), lhs, rhs)
+            n_recorded += 1
             if len(pool) < max_cons:
                 heapq.heappush(pool, entry)
-            elif elb > pool[0][0]:
+            elif entry[0] > pool[0][0]:
                 heapq.heapreplace(pool, entry)
     logger.info(f"Skipped {n_skip} cover sets by lifted constraints")
     logger.info(f"Skipped {n_dom} cover sets by dominance")
     logger.info(f"Solved {n_calls} lifting subproblems")
-    return [(lhs, rhs) for _, _, lhs, rhs in sorted(pool, key=lambda x: -x[0])]
+    return [(lhs, rhs) for _, lhs, rhs in sorted(pool, key=lambda x: x[0], reverse=True)]
 
 
-def run_lifting(model, max_cons, cover_card, pool_size, max_lifting_calls, milp, cp26_lifting_behavior=False):
+def run_lifting(model, max_cons, cover_card, pool_size, max_lifting_calls, milp, lifting_behavior='fixed'):
     if max_cons == 0:
         return model.copy()
-    logger.info(f"Lifting behavior: {'cp26' if cp26_lifting_behavior else 'fixed'}")
+    assert lifting_behavior in LIFTING_BEHAVIORS, lifting_behavior
+    logger.info(f"Lifting behavior: {lifting_behavior}")
     intervals, A, b = extract_cumulative_matrix(model.constraints)
     durations = [d for _, _, d in intervals]
     cons = process_cumulative_constraints(
         durations, A, b, cover_card, pool_size, max_lifting_calls, milp, max_cons,
-        cp26_lifting_behavior=cp26_lifting_behavior
+        lifting_behavior=lifting_behavior
     )
     logger.info(f'Received {len(cons)} candidate cumulative constraints')
     for ub in range(1, cover_card):

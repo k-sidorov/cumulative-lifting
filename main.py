@@ -102,7 +102,9 @@ def main(args):
                         pool_size=args.cover_pool_size,
                         max_lifting_calls=args.max_lifting_calls,
                         milp=solve_milp,
-                        cp26_lifting_behavior=args.cp26_lifting_behavior)
+                        lifting_behavior={None: 'fixed',
+                                          'main': 'cp26',
+                                          'appendix-c': 'cp26-appendix-c'}[args.cp26_lifting_behavior])
     solver = SolverLookup.get(name=f'minizinc:{args.solver}', model=model)
     logger.info("Finished preprocessing, FlatZinc output pending")
     elapsed_time = time.perf_counter_ns() - start_time
@@ -136,8 +138,11 @@ if __name__ == "__main__":
                         help="Number of cover sets to be considered")
     parser.add_argument('-l', '--max-lifting-calls', type=int, default=None,
                         help="Maximum number of lifting subproblems to be solved")
-    parser.add_argument('--cp26-lifting-behavior', action='store_true',
-                        help="Recover two legacy incorrect behaviors from the CP 2026 version: "
-                             "the max-duration representative comparison and the ELB early-stop scaling")
+    parser.add_argument('--cp26-lifting-behavior', nargs='?', const='main', default=None,
+                        choices=['main', 'appendix-c'],
+                        help="Reproduce the lifting of the CP 2026 paper: 'main' (the default when the "
+                             "flag is given) for the main-text results, i.e., the legacy max-duration "
+                             "representative without early stop; 'appendix-c' for Appendix C, i.e., the "
+                             "legacy representative with the underestimated early-stop bound")
     args = parser.parse_args()
     main(args)

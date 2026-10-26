@@ -11,7 +11,8 @@
 # Arms per solver configuration:
 #   base-*      : -n 0, no lifting (identical under both lifting behaviors, so it runs once)
 #   lift-*      : -n 5, the corrected lifting (default since v0.3.0)
-#   lift-cp26-* : -n 5 --cp26-lifting-behavior, reproduces the lifting reported in the CP 2026 paper
+#   lift-cp26-* : -n 5 --cp26-lifting-behavior=appendix-c, reproduces the lifting behind Appendix C of the
+#                 CP 2026 paper (commit ecc8a50: the legacy representative, the underestimated early stop)
 #
 # Solver flags are copied verbatim from the gourd config that produced the paper's results, with
 # one exception: Pumpkin primal passes `--solver-flags=-f` as a single token, since argparse rejects
@@ -25,7 +26,8 @@
 #   pilot: a narrower pattern, e.g. -Dglob='**/*1.dzn' (~9% of RCPSP and RCPSP/max, but no data_la_x)
 #
 # Build, inspect and submit with:
-#   scut build slurm/configs/scheduling-budgeted.toml -Dworkspace=... -Dproject_dir=... -Drcpsp_max_large=... -Dglob='**/*.dzn' -v
+#   scut build slurm/configs/scheduling-budgeted.toml -Dworkspace=... -Dproject_dir=... -Drcpsp_max_large=... \
+#       -Dpumpkin_repo=... -Dpumpkin_commit=<the paper's Pumpkin commit> -Dcpsat_binary=.../bin/fzn-cp-sat -Dglob='**/*.dzn' -v
 #   scut plan      # one fully resolved argv, before spending an array on it
 #   scut submit    # re-runnable: drains as much of the backlog as the quota allows
 #   scut nodes     # after completion: which node ran each task
@@ -35,6 +37,26 @@ experiment_root = "${workspace}/experiments"
 
 [input.rcpsp-max]
 arguments = ["max", "path|${rcpsp_max_large}/${glob}"]
+
+# --- dependencies ---------------------------------------------------------------------------------
+# See scheduling.toml.
+
+[dependency.lifting]
+git = "${project_dir}"    # main.py, its modules, and uv.lock (incl. gurobipy) via `uv run --frozen`
+
+[dependency.pumpkin]
+git = "${pumpkin_repo}"                                 # the source, which must be at...
+expect = "${pumpkin_commit}"                            # ...the Pumpkin version of the paper
+file = "${pumpkin_repo}/target/release/pumpkin-solver"  # the binary its .msc points to
+
+[dependency.cp-sat]
+file = "${cpsat_binary}"  # fzn-cp-sat, from the OR-Tools distribution
+
+[dependency.minizinc]
+command = ["minizinc", "--version"]
+
+[dependency.minizinc-solvers]
+command = ["minizinc", "--solvers-json"]  # which build `--solver pumpkin` / `cp-sat` resolves to
 
 # --- pumpkin-lb -----------------------------------------------------------------------------------
 
@@ -71,7 +93,7 @@ command = [
     "${project_dir}/main.py",
     "--lifting-solver", "gurobi",
     "-n", "5",
-    "--cp26-lifting-behavior",
+    "--cp26-lifting-behavior=appendix-c",
     "-p", "100",
     "-b", "1000",
     "-l", "20000",
@@ -116,7 +138,7 @@ command = [
     "${project_dir}/main.py",
     "--lifting-solver", "gurobi",
     "-n", "5",
-    "--cp26-lifting-behavior",
+    "--cp26-lifting-behavior=appendix-c",
     "-p", "100",
     "-b", "1000",
     "-l", "20000",
@@ -161,7 +183,7 @@ command = [
     "${project_dir}/main.py",
     "--lifting-solver", "gurobi",
     "-n", "5",
-    "--cp26-lifting-behavior",
+    "--cp26-lifting-behavior=appendix-c",
     "-p", "100",
     "-b", "1000",
     "-l", "20000",
@@ -206,7 +228,7 @@ command = [
     "${project_dir}/main.py",
     "--lifting-solver", "gurobi",
     "-n", "5",
-    "--cp26-lifting-behavior",
+    "--cp26-lifting-behavior=appendix-c",
     "-p", "100",
     "-b", "1000",
     "-l", "20000",
