@@ -3,16 +3,17 @@
 # (removed in v0.3.0; see commit ecc8a50). Use a -Dworkspace distinct from scheduling.toml: the
 # gourd configs shared one output folder.
 #
-# Every main.py flag lives under [program.*]: scut keeps only arguments[0] (the flavor) and the
+# Every main.py flag lives under [program.main]: scut keeps only arguments[0] (the flavor) and the
 # path| glob from [input.*] and appends `flavor path` to the command, so the input-side flags of
-# the gourd config (-n, -p, -b, -l, --lifting-solver) moved here. Each arm is spelled out because
-# only the lifted arms differ in more than one token, which [factors] cannot express.
+# the gourd config (-n, -p, -b, -l, --lifting-solver) moved here. The arms are two table factors
+# (named levels, each a list of tokens that replaces `${solver}` / `${lifting}` in the command), so
+# a run dir reads main/solver=<solver>+lifting=<arm>/<input>/<instance>.
 #
-# Arms per solver configuration:
-#   base-*      : -n 0, no lifting (identical under both lifting behaviors, so it runs once)
-#   lift-*      : -n 5, the corrected lifting (default since v0.3.0)
-#   lift-cp26-* : -n 5 --cp26-lifting-behavior=appendix-c, reproduces the lifting behind Appendix C of the
-#                 CP 2026 paper (commit ecc8a50: the legacy representative, the underestimated early stop)
+# Levels of [factors.lifting], per level of [factors.solver]:
+#   base      : -n 0, no lifting (identical under both lifting behaviors, so it runs once)
+#   lift      : -n 5, the corrected lifting (default since v0.3.0)
+#   lift-cp26 : -n 5 --cp26-lifting-behavior=appendix-c, reproduces the lifting behind Appendix C of the
+#               CP 2026 paper (commit ecc8a50: the legacy representative, the underestimated early stop)
 #
 # Solver flags are copied verbatim from the gourd config that produced the paper's results, with
 # one exception: Pumpkin primal passes `--solver-flags=-f` as a single token, since argparse rejects
@@ -58,182 +59,30 @@ command = ["minizinc", "--version"]
 [dependency.minizinc-solvers]
 command = ["minizinc", "--solvers-json"]  # which build `--solver pumpkin` / `cp-sat` resolves to
 
-# --- pumpkin-lb -----------------------------------------------------------------------------------
+# --- arms -----------------------------------------------------------------------------------------
+# solver x lifting, lifting varying fastest: the three lifting arms of one solver configuration are
+# adjacent in the array, so they share a submission and a node pool.
 
-[program.base-pumpkin-lb]
+[factors.solver]
+pumpkin-lb = ["--solver", "pumpkin", "--solver-flags", "-f --optimisation-strategy linear-unsat-sat"]
+pumpkin-ub = ["--solver", "pumpkin", "--solver-flags=-f"]
+cp-sat-lb  = ["--solver", "cp-sat", "--solver-flags", "-v --params \"optimize_with_core:true use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\""]
+cp-sat-ub  = ["--solver", "cp-sat", "--solver-flags", "-f --params \"use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\""]
+
+[factors.lifting]
+base      = ["-n", "0"]
+lift      = ["-n", "5"]
+lift-cp26 = ["-n", "5", "--cp26-lifting-behavior=appendix-c"]
+
+[program.main]
 command = [
     "${project_dir}/main.py",
     "--lifting-solver", "gurobi",
-    "-n", "0",
+    "${lifting}",
     "-p", "100",
     "-b", "1000",
     "-l", "20000",
-    "--solver", "pumpkin",
-    "--solver-flags", "-f --optimisation-strategy linear-unsat-sat",
-    "-t", "3600000",
-]
-output_envs = true
-
-[program.lift-pumpkin-lb]
-command = [
-    "${project_dir}/main.py",
-    "--lifting-solver", "gurobi",
-    "-n", "5",
-    "-p", "100",
-    "-b", "1000",
-    "-l", "20000",
-    "--solver", "pumpkin",
-    "--solver-flags", "-f --optimisation-strategy linear-unsat-sat",
-    "-t", "3600000",
-]
-output_envs = true
-
-[program.lift-cp26-pumpkin-lb]
-command = [
-    "${project_dir}/main.py",
-    "--lifting-solver", "gurobi",
-    "-n", "5",
-    "--cp26-lifting-behavior=appendix-c",
-    "-p", "100",
-    "-b", "1000",
-    "-l", "20000",
-    "--solver", "pumpkin",
-    "--solver-flags", "-f --optimisation-strategy linear-unsat-sat",
-    "-t", "3600000",
-]
-output_envs = true
-
-# --- pumpkin-ub -----------------------------------------------------------------------------------
-
-[program.base-pumpkin-ub]
-command = [
-    "${project_dir}/main.py",
-    "--lifting-solver", "gurobi",
-    "-n", "0",
-    "-p", "100",
-    "-b", "1000",
-    "-l", "20000",
-    "--solver", "pumpkin",
-    "--solver-flags=-f",
-    "-t", "3600000",
-]
-output_envs = true
-
-[program.lift-pumpkin-ub]
-command = [
-    "${project_dir}/main.py",
-    "--lifting-solver", "gurobi",
-    "-n", "5",
-    "-p", "100",
-    "-b", "1000",
-    "-l", "20000",
-    "--solver", "pumpkin",
-    "--solver-flags=-f",
-    "-t", "3600000",
-]
-output_envs = true
-
-[program.lift-cp26-pumpkin-ub]
-command = [
-    "${project_dir}/main.py",
-    "--lifting-solver", "gurobi",
-    "-n", "5",
-    "--cp26-lifting-behavior=appendix-c",
-    "-p", "100",
-    "-b", "1000",
-    "-l", "20000",
-    "--solver", "pumpkin",
-    "--solver-flags=-f",
-    "-t", "3600000",
-]
-output_envs = true
-
-# --- cp-sat-lb ------------------------------------------------------------------------------------
-
-[program.base-cp-sat-lb]
-command = [
-    "${project_dir}/main.py",
-    "--lifting-solver", "gurobi",
-    "-n", "0",
-    "-p", "100",
-    "-b", "1000",
-    "-l", "20000",
-    "--solver", "cp-sat",
-    "--solver-flags", "-v --params \"optimize_with_core:true use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
-    "-t", "3600000",
-]
-output_envs = true
-
-[program.lift-cp-sat-lb]
-command = [
-    "${project_dir}/main.py",
-    "--lifting-solver", "gurobi",
-    "-n", "5",
-    "-p", "100",
-    "-b", "1000",
-    "-l", "20000",
-    "--solver", "cp-sat",
-    "--solver-flags", "-v --params \"optimize_with_core:true use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
-    "-t", "3600000",
-]
-output_envs = true
-
-[program.lift-cp26-cp-sat-lb]
-command = [
-    "${project_dir}/main.py",
-    "--lifting-solver", "gurobi",
-    "-n", "5",
-    "--cp26-lifting-behavior=appendix-c",
-    "-p", "100",
-    "-b", "1000",
-    "-l", "20000",
-    "--solver", "cp-sat",
-    "--solver-flags", "-v --params \"optimize_with_core:true use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
-    "-t", "3600000",
-]
-output_envs = true
-
-# --- cp-sat-ub ------------------------------------------------------------------------------------
-
-[program.base-cp-sat-ub]
-command = [
-    "${project_dir}/main.py",
-    "--lifting-solver", "gurobi",
-    "-n", "0",
-    "-p", "100",
-    "-b", "1000",
-    "-l", "20000",
-    "--solver", "cp-sat",
-    "--solver-flags", "-f --params \"use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
-    "-t", "3600000",
-]
-output_envs = true
-
-[program.lift-cp-sat-ub]
-command = [
-    "${project_dir}/main.py",
-    "--lifting-solver", "gurobi",
-    "-n", "5",
-    "-p", "100",
-    "-b", "1000",
-    "-l", "20000",
-    "--solver", "cp-sat",
-    "--solver-flags", "-f --params \"use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
-    "-t", "3600000",
-]
-output_envs = true
-
-[program.lift-cp26-cp-sat-ub]
-command = [
-    "${project_dir}/main.py",
-    "--lifting-solver", "gurobi",
-    "-n", "5",
-    "--cp26-lifting-behavior=appendix-c",
-    "-p", "100",
-    "-b", "1000",
-    "-l", "20000",
-    "--solver", "cp-sat",
-    "--solver-flags", "-f --params \"use_strong_propagation_in_disjunctive:true use_overload_checker_in_cumulative:true\"",
+    "${solver}",
     "-t", "3600000",
 ]
 output_envs = true
